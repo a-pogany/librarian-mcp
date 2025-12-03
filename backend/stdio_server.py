@@ -12,6 +12,7 @@ from pathlib import Path
 from config.settings import load_config, setup_logging
 from core.indexer import FileIndexer
 from core.search import SearchEngine
+from core.hybrid_search import HybridSearchEngine
 from mcp_server.tools import mcp, initialize_tools
 
 
@@ -27,8 +28,29 @@ def main():
         logger.info("Creating documentation directory: %s", docs_path)
         docs_path.mkdir(parents=True, exist_ok=True)
 
+    # Check if RAG/embeddings should be enabled
+    enable_embeddings = config.get('embeddings', {}).get('enabled', True)
+    search_mode = config.get('search', {}).get('mode', 'hybrid')
+
     logger.info("Initializing indexer for: %s", docs_path)
-    indexer = FileIndexer(str(docs_path), config["docs"])
+    logger.info("Embeddings enabled: %s", enable_embeddings)
+    logger.info("Search mode: %s", search_mode)
+
+    try:
+        indexer = FileIndexer(
+            str(docs_path),
+            config["docs"],
+            enable_embeddings=enable_embeddings
+        )
+    except Exception as e:
+        logger.error("Error initializing RAG components: %s", e)
+        logger.warning("Falling back to keyword-only search")
+        enable_embeddings = False
+        indexer = FileIndexer(
+            str(docs_path),
+            config["docs"],
+            enable_embeddings=False
+        )
 
     if config["docs"].get("index_on_startup", True):
         logger.info("Building initial index...")
@@ -39,7 +61,34 @@ def main():
             result["duration_seconds"],
         )
 
-    search_engine = SearchEngine(indexer)
+    # Initialize search engines
+    keyword_engine = SearchEngine(indexer)
+    semantic_engine = None
+
+    # Initialize semantic search if embeddings are enabled
+    if enable_embeddings and indexer.embedding_generator and indexer.vector_db:
+        try:
+            from core.semantic_search import SemanticSearchEngine
+            semantic_engine = SemanticSearchEngine(
+                indexer.embedding_generator,
+                indexer.vector_db,
+                indexer
+            )
+            logger.info("Semantic search engine initialized")
+        except Exception as e:
+            logger.error("Error initializing semantic search: %s", e)
+            logger.warning("Semantic search disabled, using keyword-only")
+
+    # Create hybrid search engine
+    semantic_weight = config.get('embeddings', {}).get('semantic_weight', 0.5)
+    search_engine = HybridSearchEngine(
+        keyword_engine=keyword_engine,
+        semantic_engine=semantic_engine,
+        default_mode=search_mode,
+        semantic_weight=semantic_weight
+    )
+
+    logger.info("Hybrid search engine initialized in '%s' mode", search_engine.get_mode())
     initialize_tools(indexer, search_engine)
 
     logger.info("Starting stdio MCP server")

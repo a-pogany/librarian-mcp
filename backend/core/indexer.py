@@ -104,6 +104,14 @@ class FileWatcher(FileSystemEventHandler):
             try:
                 rel_path = self.indexer.get_relative_path(event.src_path)
                 self.indexer.index.remove_document(rel_path)
+
+                # Remove from vector database if RAG is enabled
+                if self.indexer.enable_embeddings and self.indexer.vector_db:
+                    try:
+                        self.indexer.vector_db.delete_document(rel_path)
+                    except Exception as e:
+                        logger.error(f"Error removing embeddings for {rel_path}: {e}")
+
             except Exception as e:
                 logger.error(f"Error removing deleted file {event.src_path}: {e}")
 
@@ -111,7 +119,7 @@ class FileWatcher(FileSystemEventHandler):
 class FileIndexer:
     """Index documentation files"""
 
-    def __init__(self, docs_root: str, config: Dict = None):
+    def __init__(self, docs_root: str, config: Dict = None, enable_embeddings: bool = False):
         self.docs_root = Path(docs_root)
         self.config = config or {}
         self.index = DocumentIndex()
@@ -121,6 +129,68 @@ class FileIndexer:
             '.docx': DOCXParser()
         }
         self.observer: Optional[Observer] = None
+        
+        # RAG/Semantic search components (Phase 2)
+        self.enable_embeddings = enable_embeddings
+        self.embedding_generator = None
+        self.vector_db = None
+        
+        if enable_embeddings:
+            self._initialize_rag_components()
+
+    def _initialize_rag_components(self):
+        """Initialize embedding generator and vector database for RAG"""
+        try:
+            from .embeddings import EmbeddingGenerator
+            from .vector_db import VectorDatabase
+            
+            logger.info("Initializing RAG components")
+            
+            # Get model name from config
+            model_name = self.config.get('embeddings', {}).get('model', 'all-MiniLM-L6-v2')
+            
+            # Initialize embedding generator
+            self.embedding_generator = EmbeddingGenerator(model_name=model_name)
+            
+            # Initialize vector database
+            persist_dir = self.config.get('embeddings', {}).get('persist_directory')
+            self.vector_db = VectorDatabase(
+                persist_directory=persist_dir,
+                collection_name="documents"
+            )
+            
+            logger.info("RAG components initialized successfully")
+            
+        except ImportError as e:
+            logger.error(f"Failed to import RAG dependencies: {e}")
+            logger.error("Install with: pip install sentence-transformers chromadb")
+            self.enable_embeddings = False
+            raise
+        except Exception as e:
+            logger.error(f"Error initializing RAG components: {e}")
+            self.enable_embeddings = False
+            raise
+
+    def _index_embeddings(self, doc_id: str, content: str, product: str, component: str, file_type: str):
+        """Generate and store embeddings for a document"""
+        # Generate embedding
+        embedding = self.embedding_generator.encode_document(content)
+        
+        # Create metadata for vector database
+        metadata = {
+            'product': product,
+            'component': component,
+            'file_type': file_type
+        }
+        
+        # Store in vector database
+        self.vector_db.add_document(
+            doc_id=doc_id,
+            embedding=embedding,
+            metadata=metadata
+        )
+        
+        logger.debug(f"Generated embeddings for: {doc_id}")
 
     def build_index(self) -> Dict:
         """Build complete index of all documents"""
@@ -204,6 +274,13 @@ class FileIndexer:
         # Add to index
         self.index.add_document(doc)
         logger.debug(f"Indexed: {rel_path}")
+        
+        # Generate and store embeddings if enabled (Phase 2)
+        if self.enable_embeddings and self.embedding_generator and self.vector_db:
+            try:
+                self._index_embeddings(rel_path, parsed.content, product, component, path.suffix)
+            except Exception as e:
+                logger.error(f"Error generating embeddings for {rel_path}: {e}")
 
     def _scan_files(self) -> List[Path]:
         """Recursively scan for indexable files"""

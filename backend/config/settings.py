@@ -45,6 +45,17 @@ def load_config(config_path: str = "config.json") -> Dict:
     if os.getenv('LOG_LEVEL'):
         config['logging']['level'] = os.getenv('LOG_LEVEL')
 
+    # RAG/Semantic search configuration
+    if os.getenv('SEARCH_MODE'):
+        if 'search' not in config:
+            config['search'] = {}
+        config['search']['mode'] = os.getenv('SEARCH_MODE')
+
+    if os.getenv('ENABLE_EMBEDDINGS'):
+        if 'embeddings' not in config:
+            config['embeddings'] = {}
+        config['embeddings']['enabled'] = os.getenv('ENABLE_EMBEDDINGS').lower() == 'true'
+
     return config
 
 
@@ -66,7 +77,14 @@ def _get_default_config() -> Dict:
             "max_results": 50,
             "snippet_length": 200,
             "context_lines": 3,
-            "min_keyword_length": 2
+            "min_keyword_length": 2,
+            "mode": "hybrid"
+        },
+        "embeddings": {
+            "enabled": True,
+            "model": "all-MiniLM-L6-v2",
+            "persist_directory": None,
+            "semantic_weight": 0.5
         },
         "mcp": {
             "transport": "http-sse",

@@ -15,10 +15,10 @@
     "snippet_length": 200,
     "context_lines": 3,
     "min_keyword_length": 2,
-    "mode": "hybrid"
+    "mode": "keyword"
   },
   "embeddings": {
-    "enabled": true,
+    "enabled": false,
     "model": "all-MiniLM-L6-v2",
     "persist_directory": null,
     "semantic_weight": 0.5
