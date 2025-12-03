@@ -1,0 +1,12 @@
+# Documentation folder
+
+Place your documentation here following this structure:
+
+docs/
+├── product-name/
+│   ├── component-name/
+│   │   ├── *.md
+│   │   ├── *.txt
+│   │   └── *.docx
+│   └── another-component/
+└── another-product/

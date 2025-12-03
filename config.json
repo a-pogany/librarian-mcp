@@ -1,0 +1,30 @@
+{
+  "system": {
+    "name": "Documentation Search MCP",
+    "version": "1.0.0"
+  },
+  "docs": {
+    "root_path": "./docs",
+    "file_extensions": [".md", ".txt", ".docx"],
+    "max_file_size_mb": 10,
+    "watch_for_changes": true,
+    "index_on_startup": true
+  },
+  "search": {
+    "max_results": 50,
+    "snippet_length": 200,
+    "context_lines": 3,
+    "min_keyword_length": 2
+  },
+  "mcp": {
+    "transport": "http-sse",
+    "host": "127.0.0.1",
+    "port": 3001,
+    "endpoint": "/mcp"
+  },
+  "logging": {
+    "level": "info",
+    "file": "mcp_server.log",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  }
+}
