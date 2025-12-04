@@ -136,8 +136,15 @@ class FileIndexer:
         self.vector_db = None
         self.chunker = None  # Hierarchical chunking
 
+        # Folder metadata components (Phase 2.5 - Hierarchical Search)
+        self.enable_folder_metadata = enable_embeddings and self.config.get('folder_metadata', {}).get('enabled', True)
+        self.folder_metadata_extractor = None
+        self.folder_vector_db = None
+
         if enable_embeddings:
             self._initialize_rag_components()
+            if self.enable_folder_metadata:
+                self._initialize_folder_metadata_components()
 
     def _initialize_rag_components(self):
         """Initialize embedding generator, vector database, and chunker for RAG"""
@@ -186,6 +193,40 @@ class FileIndexer:
         except Exception as e:
             logger.error(f"Error initializing RAG components: {e}")
             self.enable_embeddings = False
+            raise
+
+    def _initialize_folder_metadata_components(self):
+        """Initialize folder metadata extractor and vector database"""
+        try:
+            from .folder_metadata import FolderMetadataExtractor
+            from .folder_vector_db import FolderVectorDatabase
+
+            logger.info("Initializing folder metadata components")
+
+            # Get configuration
+            folder_config = self.config.get('folder_metadata', {})
+            embeddings_config = self.config.get('embeddings', {})
+
+            # Initialize folder metadata extractor
+            self.folder_metadata_extractor = FolderMetadataExtractor(indexer=self)
+
+            # Initialize folder vector database
+            persist_dir = embeddings_config.get('persist_directory')
+            self.folder_vector_db = FolderVectorDatabase(
+                persist_directory=persist_dir,
+                collection_name="folders_v1",
+                enable_compression=True
+            )
+
+            logger.info("Folder metadata components initialized successfully")
+
+        except ImportError as e:
+            logger.error(f"Failed to import folder metadata dependencies: {e}")
+            self.enable_folder_metadata = False
+            raise
+        except Exception as e:
+            logger.error(f"Error initializing folder metadata components: {e}")
+            self.enable_folder_metadata = False
             raise
 
     def _index_embeddings_with_chunks(self, file_path: Path, parsed_content: str, product: str, component: str, file_type: str, enhanced_metadata: Dict[str, Any] = None):
@@ -286,6 +327,64 @@ class FileIndexer:
 
         logger.debug(f"Indexed {len(chunks)} chunks for: {file_path.name}")
 
+    def _build_folder_metadata(self) -> int:
+        """
+        Build folder metadata and embeddings after documents are indexed
+
+        Returns:
+            Number of folders indexed
+        """
+        if not self.folder_metadata_extractor or not self.folder_vector_db:
+            logger.warning("Folder metadata components not initialized")
+            return 0
+
+        logger.info("Building folder metadata and embeddings")
+        start_time = datetime.now()
+
+        # Extract metadata from indexed documents
+        folder_metadata_dict = self.folder_metadata_extractor.build_folder_metadata()
+
+        if not folder_metadata_dict:
+            logger.warning("No folder metadata generated")
+            return 0
+
+        # Generate embeddings for all folders
+        folder_paths = []
+        folder_embeddings = []
+        folder_metadatas = []
+
+        for folder_path, metadata in folder_metadata_dict.items():
+            # Get search text for embedding
+            search_text = metadata.get_search_text()
+
+            # Generate embedding
+            embedding = self.embedding_generator.encode_query(search_text)
+
+            # Prepare metadata for vector DB
+            folder_meta = {
+                'product': folder_path.split('/')[0] if '/' in folder_path else folder_path,
+                'description': metadata.description,
+                'doc_count': metadata.doc_count,
+                'topics': ', '.join(metadata.topics[:5])  # Store as string for ChromaDB
+            }
+
+            folder_paths.append(folder_path)
+            folder_embeddings.append(embedding)
+            folder_metadatas.append(folder_meta)
+
+        # Store in vector database
+        self.folder_vector_db.add_folders_batch(
+            folder_paths=folder_paths,
+            embeddings=folder_embeddings,
+            metadatas=folder_metadatas,
+            batch_size=100
+        )
+
+        duration = (datetime.now() - start_time).total_seconds()
+        logger.info(f"Folder metadata built: {len(folder_paths)} folders, {duration:.2f}s")
+
+        return len(folder_paths)
+
     def build_index(self) -> Dict:
         """Build complete index of all documents"""
         start_time = datetime.now()
@@ -308,6 +407,14 @@ class FileIndexer:
 
         logger.info(f"Index built: {file_count} files, {error_count} errors, {duration:.2f}s")
 
+        # Build folder metadata and embeddings if enabled
+        folder_count = 0
+        if self.enable_folder_metadata:
+            try:
+                folder_count = self._build_folder_metadata()
+            except Exception as e:
+                logger.error(f"Error building folder metadata: {e}")
+
         # Start file watcher if configured
         if self.config.get('watch_for_changes', True):
             self.start_watching()
@@ -315,6 +422,7 @@ class FileIndexer:
         return {
             'status': 'complete',
             'files_indexed': file_count,
+            'folders_indexed': folder_count,
             'errors': error_count,
             'duration_seconds': round(duration, 2)
         }

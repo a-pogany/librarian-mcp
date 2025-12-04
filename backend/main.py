@@ -81,6 +81,8 @@ async def startup_event():
         logger.info("Building initial index...")
         result = indexer.build_index()
         logger.info(f"Index built: {result['files_indexed']} files in {result['duration_seconds']}s")
+        if result.get('folders_indexed', 0) > 0:
+            logger.info(f"Folder metadata: {result['folders_indexed']} folders indexed")
 
     # Initialize search engines
     keyword_engine = SearchEngine(indexer)
@@ -90,12 +92,43 @@ async def startup_event():
     if enable_embeddings and indexer.embedding_generator and indexer.vector_db:
         try:
             from core.semantic_search import SemanticSearchEngine
-            semantic_engine = SemanticSearchEngine(
-                indexer.embedding_generator,
-                indexer.vector_db,
-                indexer
-            )
-            logger.info("Semantic search engine initialized")
+
+            # Check if folder metadata is enabled for hierarchical search
+            enable_folder_metadata = config.get('folder_metadata', {}).get('enabled', True)
+
+            if enable_folder_metadata and indexer.enable_folder_metadata and \
+               indexer.folder_metadata_extractor and indexer.folder_vector_db:
+                # Use hierarchical search with folder filtering
+                logger.info("Initializing hierarchical search with folder metadata")
+                from core.hierarchical_search import HierarchicalSearchEngine
+
+                # First initialize base semantic search
+                base_semantic_engine = SemanticSearchEngine(
+                    indexer.embedding_generator,
+                    indexer.vector_db,
+                    indexer,
+                    use_reranking=config.get('search', {}).get('use_reranking', True)
+                )
+
+                # Wrap with hierarchical search
+                semantic_engine = HierarchicalSearchEngine(
+                    embedding_generator=indexer.embedding_generator,
+                    folder_metadata_extractor=indexer.folder_metadata_extractor,
+                    folder_vector_db=indexer.folder_vector_db,
+                    semantic_search_engine=base_semantic_engine,
+                    enable_folder_filtering=True
+                )
+                logger.info("Hierarchical search engine initialized (folder filtering enabled)")
+            else:
+                # Use standard semantic search
+                semantic_engine = SemanticSearchEngine(
+                    indexer.embedding_generator,
+                    indexer.vector_db,
+                    indexer,
+                    use_reranking=config.get('search', {}).get('use_reranking', True)
+                )
+                logger.info("Semantic search engine initialized (no folder filtering)")
+
         except Exception as e:
             logger.error(f"Error initializing semantic search: {e}")
             logger.warning("Semantic search disabled, using keyword-only")

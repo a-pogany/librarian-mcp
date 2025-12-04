@@ -38,6 +38,13 @@
     "preserve_tables": true,
     "extract_metadata": true
   },
+  "folder_metadata": {
+    "enabled": true,
+    "max_topics": 10,
+    "max_folders_to_search": 3,
+    "folder_similarity_threshold": 0.3,
+    "description_max_length": 300
+  },
   "cache": {
     "query_embedding_cache_size": 10000,
     "result_cache_ttl": 300
