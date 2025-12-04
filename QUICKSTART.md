@@ -1,6 +1,8 @@
 # Librarian MCP - Quick Start Guide
 
-Get up and running with Librarian MCP in 5 minutes.
+**Version**: 2.0.0 (Enterprise RAG)
+
+Get up and running with Librarian MCP Enterprise RAG in 5-10 minutes (includes one-time model download).
 
 ## Step 1: Setup (2 minutes)
 
@@ -13,9 +15,12 @@ cd librarian-mcp
 
 This will:
 - Create virtual environment
-- Install dependencies
+- Install dependencies (including RAG features: sentence-transformers, chromadb, rank-bm25)
+- **Download models** (~1.4GB one-time: e5-large-v2 + cross-encoder)
 - Create .env configuration
 - Create docs directory
+
+**Note**: First run downloads ~1.4GB of AI models (cached in `~/.cache/torch/`).
 
 ## Step 2: Configure (1 minute)
 
@@ -62,12 +67,20 @@ EOF
 ./scripts/start.sh
 ```
 
-You should see:
+You should see (v2.0.0):
 ```
 🚀 Starting Librarian MCP Server...
+INFO Embeddings enabled: True
+INFO Search mode: hybrid
+INFO Loading embedding model: intfloat/e5-large-v2
+INFO Model loaded successfully. Embedding dimension: 1024
+INFO Reranker model loaded successfully
+INFO Hybrid search engine initialized in 'hybrid' mode (RRF)
 📚 Starting MCP server on http://127.0.0.1:3001
 INFO:     Started server process
 ```
+
+**First startup** may take 1-2 minutes to download models (one-time only).
 
 ## Step 5: Configure Claude Desktop (30 seconds)
 
@@ -91,11 +104,22 @@ Edit Claude Desktop configuration:
 
 Open Claude Desktop and try:
 
+**Natural Language Search** (v2.0.0 Semantic Search):
+```
+How do I implement OAuth2 authentication?
+```
+
+Claude will use **hybrid search** (semantic + keyword) to find relevant docs, understanding your intent even without exact keywords!
+
+**Traditional Search**:
 ```
 Search for authentication documentation
 ```
 
-Claude will automatically use the `search_documentation` tool and find your document!
+Both queries use the `search_documentation` tool with enterprise RAG capabilities:
+- E5-large-v2 embeddings (1024d)
+- Cross-encoder reranking
+- RRF hybrid fusion
 
 ## Verify Installation
 
@@ -109,9 +133,13 @@ Claude will automatically use the `search_documentation` tool and find your docu
 
 ## Next Steps
 
-1. **Add More Documentation**: Place your existing docs in the `docs/` folder
-2. **Customize Search**: Edit `config.json` to adjust search settings
+1. **Add More Documentation**: Place your existing docs in the `docs/` folder (supports large DOCX files 200-600 pages!)
+2. **Customize Search**: Edit `config.json` to adjust search mode, chunking, reranking settings
 3. **Explore Tools**: Try different MCP tools (list_products, get_document, etc.)
+4. **Test Enterprise Features**:
+   - Large DOCX files: System chunks and indexes 200-600 page documents
+   - Semantic search: Ask conceptual questions, not just keyword matches
+   - Hybrid search: Get best of both keyword and semantic search
 
 ## Common Issues
 
@@ -131,6 +159,19 @@ ls -la docs/
 
 # Check file permissions
 chmod -R 755 docs/
+
+# Check vector database (v2.0.0)
+ls -la vector_db/
+# Should show chroma.sqlite3 and other files
+```
+
+### Model download issues (v2.0.0)
+```bash
+# Manually test model download
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/e5-large-v2')"
+
+# Check disk space (need ~2GB)
+df -h ~/.cache/torch
 ```
 
 ### Claude Desktop won't connect

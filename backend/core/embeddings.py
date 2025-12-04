@@ -18,10 +18,17 @@ class EmbeddingGenerator:
 
         Args:
             model_name: Name of sentence-transformer model to use
+                       Supported: all-MiniLM-L6-v2 (384d, fast)
+                                 intfloat/e5-large-v2 (1024d, better quality)
+                                 BAAI/bge-large-en-v1.5 (1024d, best for RAG)
         """
         self.model_name = model_name
         self.model = None
-        self.dimension = 384  # MiniLM-L6-v2 dimension
+        # Dimension will be determined from model
+        self.dimension = None
+        # Detect if using e5 or bge models (require special prefixes)
+        self.use_query_prefix = 'e5' in model_name.lower()
+        self.use_passage_prefix = 'e5' in model_name.lower()
         self._load_model()
 
     def _load_model(self):
@@ -94,25 +101,37 @@ class EmbeddingGenerator:
         """
         Encode a search query
 
+        For e5 models, adds 'query: ' prefix for optimal performance
+
         Args:
             query: Query string
 
         Returns:
             Query embedding vector
         """
+        if self.use_query_prefix:
+            query = f"query: {query}"
         return self.encode_single(query)
 
     def encode_document(self, content: str, max_length: int = 512) -> np.ndarray:
         """
         Encode a document with optional truncation
 
+        For e5 models, adds 'passage: ' prefix for optimal performance
+        NOTE: With hierarchical chunking, documents should already be chunked
+              appropriately, so truncation should rarely occur.
+
         Args:
-            content: Document content
+            content: Document content (ideally pre-chunked)
             max_length: Maximum number of tokens (approximate)
 
         Returns:
             Document embedding vector
         """
+        # Add passage prefix for e5 models
+        if self.use_passage_prefix:
+            content = f"passage: {content}"
+
         # Simple truncation by characters (rough approximation)
         # 1 token ≈ 4 characters for English text
         max_chars = max_length * 4

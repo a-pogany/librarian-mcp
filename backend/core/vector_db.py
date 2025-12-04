@@ -13,16 +13,23 @@ logger = logging.getLogger(__name__)
 class VectorDatabase:
     """ChromaDB wrapper for vector similarity search"""
 
-    def __init__(self, persist_directory: Optional[str] = None, collection_name: str = "documents"):
+    def __init__(
+        self,
+        persist_directory: Optional[str] = None,
+        collection_name: str = "documents",
+        enable_compression: bool = True
+    ):
         """
         Initialize vector database
 
         Args:
             persist_directory: Directory to persist database (None for in-memory)
             collection_name: Name of the collection to use
+            enable_compression: Enable compression for better disk usage
         """
         self.persist_directory = persist_directory
         self.collection_name = collection_name
+        self.enable_compression = enable_compression
         self.client = None
         self.collection = None
         self._initialize()
@@ -36,13 +43,21 @@ class VectorDatabase:
             logger.info("Initializing ChromaDB")
 
             if self.persist_directory:
-                # Persistent storage
+                # Persistent storage with optimization
                 persist_path = Path(self.persist_directory)
                 persist_path.mkdir(parents=True, exist_ok=True)
 
+                # Optimized settings for production
+                # Note: ChromaDB 1.1.1 supports limited settings
+                settings = Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True,
+                    is_persistent=True
+                )
+
                 self.client = chromadb.PersistentClient(
                     path=str(persist_path),
-                    settings=Settings(anonymized_telemetry=False)
+                    settings=settings
                 )
                 logger.info(f"Using persistent storage: {persist_path}")
             else:
@@ -52,10 +67,15 @@ class VectorDatabase:
                 )
                 logger.info("Using in-memory storage")
 
-            # Get or create collection
+            # Get or create collection with optimized HNSW parameters
             self.collection = self.client.get_or_create_collection(
                 name=self.collection_name,
-                metadata={"hnsw:space": "cosine"}  # Use cosine similarity
+                metadata={
+                    "hnsw:space": "cosine",
+                    "hnsw:construction_ef": 200,  # Better index quality
+                    "hnsw:search_ef": 100,        # Better search quality
+                    "hnsw:M": 16                   # Memory vs speed tradeoff
+                }
             )
 
             logger.info(f"Collection '{self.collection_name}' ready")
@@ -110,7 +130,7 @@ class VectorDatabase:
         Add a single document to the database
 
         Args:
-            doc_id: Document ID (file path)
+            doc_id: Document ID (file path or chunk ID)
             embedding: Document embedding vector
             metadata: Document metadata
         """
@@ -119,6 +139,31 @@ class VectorDatabase:
             embeddings=np.array([embedding]),
             metadatas=[metadata]
         )
+
+    def add_documents_batch(
+        self,
+        ids: List[str],
+        embeddings: np.ndarray,
+        metadatas: List[Dict],
+        batch_size: int = 1000
+    ):
+        """
+        Add documents in batches to avoid memory issues
+
+        Args:
+            ids: List of document IDs
+            embeddings: numpy array of embeddings
+            metadatas: List of metadata dictionaries
+            batch_size: Number of documents per batch
+        """
+        for i in range(0, len(ids), batch_size):
+            batch_ids = ids[i:i + batch_size]
+            batch_embeddings = embeddings[i:i + batch_size]
+            batch_metadatas = metadatas[i:i + batch_size]
+
+            self.add_documents(batch_ids, batch_embeddings, batch_metadatas)
+
+            logger.info(f"Indexed batch {i//batch_size + 1}: {len(batch_ids)} chunks")
 
     def search(
         self,

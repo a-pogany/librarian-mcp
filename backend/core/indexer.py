@@ -129,38 +129,55 @@ class FileIndexer:
             '.docx': DOCXParser()
         }
         self.observer: Optional[Observer] = None
-        
+
         # RAG/Semantic search components (Phase 2)
         self.enable_embeddings = enable_embeddings
         self.embedding_generator = None
         self.vector_db = None
-        
+        self.chunker = None  # Hierarchical chunking
+
         if enable_embeddings:
             self._initialize_rag_components()
 
     def _initialize_rag_components(self):
-        """Initialize embedding generator and vector database for RAG"""
+        """Initialize embedding generator, vector database, and chunker for RAG"""
         try:
             from .embeddings import EmbeddingGenerator
             from .vector_db import VectorDatabase
-            
+            from .chunking import DocumentChunker
+
             logger.info("Initializing RAG components")
-            
+
+            # Get configuration
+            embeddings_config = self.config.get('embeddings', {})
+            chunking_config = self.config.get('chunking', {})
+
             # Get model name from config
-            model_name = self.config.get('embeddings', {}).get('model', 'all-MiniLM-L6-v2')
-            
+            model_name = embeddings_config.get('model', 'all-MiniLM-L6-v2')
+
             # Initialize embedding generator
             self.embedding_generator = EmbeddingGenerator(model_name=model_name)
-            
-            # Initialize vector database
-            persist_dir = self.config.get('embeddings', {}).get('persist_directory')
+
+            # Initialize vector database with optimizations
+            persist_dir = embeddings_config.get('persist_directory')
+            enable_compression = embeddings_config.get('enable_compression', True)
             self.vector_db = VectorDatabase(
                 persist_directory=persist_dir,
-                collection_name="documents"
+                collection_name="documents_v2",
+                enable_compression=enable_compression
             )
-            
+
+            # Initialize hierarchical chunker
+            chunk_size = embeddings_config.get('chunk_size', 512)
+            chunk_overlap = embeddings_config.get('chunk_overlap', 128)
+            self.chunker = DocumentChunker(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                respect_boundaries=chunking_config.get('respect_boundaries', True)
+            )
+
             logger.info("RAG components initialized successfully")
-            
+
         except ImportError as e:
             logger.error(f"Failed to import RAG dependencies: {e}")
             logger.error("Install with: pip install sentence-transformers chromadb")
@@ -171,26 +188,68 @@ class FileIndexer:
             self.enable_embeddings = False
             raise
 
-    def _index_embeddings(self, doc_id: str, content: str, product: str, component: str, file_type: str):
-        """Generate and store embeddings for a document"""
-        # Generate embedding
-        embedding = self.embedding_generator.encode_document(content)
-        
-        # Create metadata for vector database
-        metadata = {
-            'product': product,
-            'component': component,
-            'file_type': file_type
-        }
-        
-        # Store in vector database
-        self.vector_db.add_document(
-            doc_id=doc_id,
-            embedding=embedding,
-            metadata=metadata
+    def _index_embeddings_with_chunks(self, file_path: Path, parsed_content: str, product: str, component: str, file_type: str):
+        """Generate and store embeddings for document chunks"""
+        chunks = []
+
+        # Use hierarchical chunking for DOCX files
+        if file_type == '.docx' and self.chunker:
+            try:
+                chunks = self.chunker.chunk_docx(str(file_path))
+                logger.debug(f"Created {len(chunks)} chunks for {file_path.name}")
+            except Exception as e:
+                logger.error(f"Chunking failed for {file_path}, falling back to full document: {e}")
+                # Fall back to single chunk
+                chunks = [{
+                    'content': parsed_content,
+                    'metadata': {'chunk_type': 'full_document', 'chunk_index': 0}
+                }]
+        else:
+            # For non-DOCX files, use simple chunking or full document
+            chunks = [{
+                'content': parsed_content,
+                'metadata': {'chunk_type': 'full_document', 'chunk_index': 0}
+            }]
+
+        if not chunks:
+            return
+
+        # Generate embeddings for all chunks in batch
+        chunk_texts = [chunk['content'] for chunk in chunks]
+        embeddings = self.embedding_generator.encode(chunk_texts, batch_size=32)
+
+        # Prepare data for batch insertion
+        ids = []
+        metadatas = []
+
+        for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            # Create unique chunk ID
+            relative_path = self.get_relative_path(str(file_path))
+            chunk_id = f"{relative_path}#chunk{i}"
+
+            # Merge metadata
+            metadata = {
+                'file_path': relative_path,
+                'product': product,
+                'component': component,
+                'file_type': file_type,
+                'chunk_index': i,
+                'total_chunks': len(chunks),
+                **chunk['metadata']  # Add chunk-specific metadata
+            }
+
+            ids.append(chunk_id)
+            metadatas.append(metadata)
+
+        # Batch insert into vector database
+        self.vector_db.add_documents_batch(
+            ids=ids,
+            embeddings=embeddings,
+            metadatas=metadatas,
+            batch_size=1000
         )
-        
-        logger.debug(f"Generated embeddings for: {doc_id}")
+
+        logger.debug(f"Indexed {len(chunks)} chunks for: {file_path.name}")
 
     def build_index(self) -> Dict:
         """Build complete index of all documents"""
@@ -274,11 +333,11 @@ class FileIndexer:
         # Add to index
         self.index.add_document(doc)
         logger.debug(f"Indexed: {rel_path}")
-        
-        # Generate and store embeddings if enabled (Phase 2)
+
+        # Generate and store embeddings with chunking if enabled (Phase 2)
         if self.enable_embeddings and self.embedding_generator and self.vector_db:
             try:
-                self._index_embeddings(rel_path, parsed.content, product, component, path.suffix)
+                self._index_embeddings_with_chunks(path, parsed.content, product, component, path.suffix)
             except Exception as e:
                 logger.error(f"Error generating embeddings for {rel_path}: {e}")
 

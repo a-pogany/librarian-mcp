@@ -98,10 +98,10 @@ class TextParser(Parser):
 
 
 class DOCXParser(Parser):
-    """Parse DOCX files"""
+    """Parse DOCX files with enhanced metadata"""
 
     def parse(self, file_path: str) -> ParseResult:
-        """Parse DOCX file"""
+        """Parse DOCX file with comprehensive metadata extraction"""
         doc = DOCXDocument(file_path)
 
         content_parts = []
@@ -123,7 +123,7 @@ class DOCXParser(Parser):
         for table in doc.tables:
             content_parts.append(self._format_table(table))
 
-        # Extract metadata
+        # Extract comprehensive metadata
         metadata = self._extract_metadata(doc)
 
         return ParseResult(
@@ -141,14 +141,56 @@ class DOCXParser(Parser):
         return '\n'.join(rows)
 
     def _extract_metadata(self, doc: DOCXDocument) -> Dict:
-        """Extract document metadata"""
+        """Extract comprehensive document metadata"""
         try:
             core_props = doc.core_properties
+
+            # Count sections and estimate pages
+            sections = self._extract_sections(doc)
+            estimated_pages = self._estimate_pages(doc)
+            heading_structure = self._extract_heading_structure(doc)
+
             return {
                 'title': core_props.title or '',
                 'author': core_props.author or '',
                 'created': core_props.created.isoformat() if core_props.created else None,
-                'modified': core_props.modified.isoformat() if core_props.modified else None
+                'modified': core_props.modified.isoformat() if core_props.modified else None,
+                'revision': core_props.revision,
+                'pages': estimated_pages,
+                'sections': sections,
+                'has_tables': len(doc.tables) > 0,
+                'table_count': len(doc.tables),
+                'headings': heading_structure
             }
-        except Exception:
-            return {}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _extract_sections(self, doc: DOCXDocument) -> List[str]:
+        """Extract section headings"""
+        sections = []
+        for para in doc.paragraphs:
+            if para.style.name.startswith('Heading'):
+                sections.append(para.text.strip())
+        return sections
+
+    def _extract_heading_structure(self, doc: DOCXDocument) -> Dict[str, List[str]]:
+        """Extract headings by level"""
+        headings = {'h1': [], 'h2': [], 'h3': []}
+
+        for para in doc.paragraphs:
+            if para.style.name == 'Heading 1':
+                headings['h1'].append(para.text.strip())
+            elif para.style.name == 'Heading 2':
+                headings['h2'].append(para.text.strip())
+            elif para.style.name == 'Heading 3':
+                headings['h3'].append(para.text.strip())
+
+        return headings
+
+    def _estimate_pages(self, doc: DOCXDocument) -> int:
+        """
+        Estimate page count (approximate)
+        Assumptions: ~500 words per page
+        """
+        total_words = sum(len(para.text.split()) for para in doc.paragraphs)
+        return max(1, total_words // 500)

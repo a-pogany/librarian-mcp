@@ -11,13 +11,14 @@ logger = logging.getLogger(__name__)
 
 
 class SemanticSearchEngine:
-    """Semantic search using vector embeddings and similarity matching"""
+    """Semantic search using vector embeddings and similarity matching with reranking"""
 
     def __init__(
         self,
         embedding_generator: EmbeddingGenerator,
         vector_db: VectorDatabase,
-        indexer
+        indexer,
+        use_reranking: bool = True
     ):
         """
         Initialize semantic search engine
@@ -26,10 +27,25 @@ class SemanticSearchEngine:
             embedding_generator: Embedding generator instance
             vector_db: Vector database instance
             indexer: Document indexer for metadata lookup
+            use_reranking: Enable two-stage reranking for better precision
         """
         self.embedding_generator = embedding_generator
         self.vector_db = vector_db
         self.indexer = indexer
+        self.use_reranking = use_reranking
+        self.reranker = None
+
+        # Initialize reranker if enabled
+        if use_reranking:
+            try:
+                from .reranker import Reranker
+                self.reranker = Reranker()
+                if not self.reranker.is_available():
+                    logger.warning("Reranker not available, disabling reranking")
+                    self.reranker = None
+            except ImportError:
+                logger.warning("Reranker module not found, disabling reranking")
+                self.reranker = None
 
     def search(
         self,
@@ -65,9 +81,11 @@ class SemanticSearchEngine:
             where_filter = self._build_filter(product, component, file_types)
 
             # Search vector database
+            # If using reranking, fetch more candidates for stage 2
+            candidate_multiplier = 5 if self.reranker and self.reranker.is_available() else 2
             vector_results = self.vector_db.search(
                 query_embedding=query_embedding,
-                n_results=max_results * 2,  # Get more candidates for filtering
+                n_results=max_results * candidate_multiplier,
                 where=where_filter
             )
 
@@ -79,7 +97,7 @@ class SemanticSearchEngine:
 
             # Enrich with document metadata from indexer
             enriched_results = []
-            for result in filtered_results[:max_results]:
+            for result in filtered_results:
                 doc_id = result['id']
                 doc = self.indexer.index.documents.get(doc_id)
 
@@ -95,12 +113,18 @@ class SemanticSearchEngine:
                         'file_name': doc['file_name'],
                         'file_type': doc['file_type'],
                         'snippet': snippet,
+                        'content': snippet,  # For reranker
                         'relevance_score': round(result['similarity'], 2),
                         'similarity_score': round(result['similarity'], 2),
                         'last_modified': doc['last_modified']
                     })
 
-            return enriched_results
+            # Stage 2: Rerank results for better precision
+            if self.reranker and self.reranker.is_available() and len(enriched_results) > max_results:
+                logger.debug(f"Reranking {len(enriched_results)} candidates to top {max_results}")
+                enriched_results = self.reranker.rerank(query, enriched_results, top_k=max_results)
+
+            return enriched_results[:max_results]
 
         except Exception as e:
             logger.error(f"Error in semantic search: {e}")

@@ -14,10 +14,11 @@ markdown==3.7
 chardet==5.2.0
 watchdog==6.0.0
 
-# RAG / Semantic Search (Phase 2)
-sentence-transformers==3.3.1
-chromadb==0.5.23
+# RAG / Semantic Search (Phase 2 & Enterprise Enhancements)
+sentence-transformers==3.3.1  # Supports e5-large-v2 and cross-encoders for reranking
+chromadb==0.5.23  # Vector database with persistent storage
 numpy>=1.24.0,<2.0
+rank-bm25==0.2.2  # BM25 keyword search algorithm
 
 # Testing
 pytest==8.3.4

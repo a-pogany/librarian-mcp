@@ -4,6 +4,7 @@ Hybrid search engine combining keyword and semantic search
 
 import logging
 from typing import List, Dict, Optional, Any
+from collections import defaultdict
 from .search import SearchEngine
 from .semantic_search import SemanticSearchEngine
 
@@ -25,7 +26,8 @@ class HybridSearchEngine:
         keyword_engine: SearchEngine,
         semantic_engine: Optional[SemanticSearchEngine] = None,
         default_mode: str = "hybrid",
-        semantic_weight: float = 0.5
+        semantic_weight: float = 0.5,
+        use_rrf: bool = True
     ):
         """
         Initialize hybrid search engine
@@ -35,11 +37,13 @@ class HybridSearchEngine:
             semantic_engine: Semantic search engine (optional for keyword-only mode)
             default_mode: Default search mode (keyword, semantic, or hybrid)
             semantic_weight: Weight for semantic scores in hybrid mode (0-1)
+            use_rrf: Use Reciprocal Rank Fusion instead of weighted average
         """
         self.keyword_engine = keyword_engine
         self.semantic_engine = semantic_engine
         self.default_mode = default_mode
         self.semantic_weight = semantic_weight
+        self.use_rrf = use_rrf
 
         # Validate mode
         if default_mode not in ['keyword', 'semantic', 'hybrid']:
@@ -51,7 +55,8 @@ class HybridSearchEngine:
             logger.warning(f"Semantic engine not available, falling back to keyword mode")
             self.default_mode = 'keyword'
 
-        logger.info(f"Initialized HybridSearchEngine in '{self.default_mode}' mode")
+        fusion_method = "RRF" if use_rrf else "weighted average"
+        logger.info(f"Initialized HybridSearchEngine in '{self.default_mode}' mode ({fusion_method})")
 
     def search(
         self,
@@ -153,8 +158,7 @@ class HybridSearchEngine:
         """
         Execute hybrid search combining keyword and semantic results
 
-        Scoring formula:
-        hybrid_score = (1 - weight) * keyword_score + weight * semantic_score
+        Uses either RRF or weighted average based on configuration
         """
         if not self.semantic_engine:
             logger.warning("Semantic engine not available, falling back to keyword")
@@ -163,12 +167,15 @@ class HybridSearchEngine:
         logger.debug(f"Executing hybrid search: {query}")
 
         # Get results from both engines
+        # Fetch proportionally more results for better fusion
+        candidate_multiplier = 3 if self.use_rrf else 2
+
         keyword_results = self.keyword_engine.search(
             query=query,
             product=product,
             component=component,
             file_types=file_types,
-            max_results=max_results * 2  # Get more candidates
+            max_results=max_results * candidate_multiplier
         )
 
         semantic_results = self.semantic_engine.search(
@@ -176,8 +183,13 @@ class HybridSearchEngine:
             product=product,
             component=component,
             file_types=file_types,
-            max_results=max_results * 2  # Get more candidates
+            max_results=max_results * candidate_multiplier
         )
+
+        # Use RRF or weighted average
+        if self.use_rrf:
+            combined_results = self._reciprocal_rank_fusion(keyword_results, semantic_results)
+            return combined_results[:max_results]
 
         # Create score maps for efficient lookup
         keyword_scores = {r['id']: r['relevance_score'] for r in keyword_results}
@@ -233,6 +245,54 @@ class HybridSearchEngine:
 
         # Return top N results
         return combined_results[:max_results]
+
+    def _reciprocal_rank_fusion(
+        self,
+        keyword_results: List[Dict],
+        semantic_results: List[Dict],
+        k: int = 60
+    ) -> List[Dict]:
+        """
+        RRF: Better than weighted average for combining rankings
+
+        Formula: score = 1/(k + rank)
+
+        Args:
+            keyword_results: Results from keyword search
+            semantic_results: Results from semantic search
+            k: Constant for RRF (default 60)
+
+        Returns:
+            Fused results sorted by RRF score
+        """
+        scores = defaultdict(float)
+        doc_data = {}
+
+        # Add keyword scores
+        for rank, result in enumerate(keyword_results):
+            doc_id = result['id']
+            scores[doc_id] += 1.0 / (k + rank)
+            doc_data[doc_id] = result
+
+        # Add semantic scores
+        for rank, result in enumerate(semantic_results):
+            doc_id = result['id']
+            scores[doc_id] += 1.0 / (k + rank)
+            if doc_id not in doc_data:
+                doc_data[doc_id] = result
+
+        # Sort by RRF score
+        sorted_docs = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+
+        # Format results
+        results = []
+        for doc_id, rrf_score in sorted_docs:
+            result = doc_data[doc_id].copy()
+            result['relevance_score'] = round(rrf_score, 4)
+            result['search_mode'] = 'hybrid_rrf'
+            results.append(result)
+
+        return results
 
     def get_document(self, path: str, section: Optional[str] = None) -> Optional[Dict]:
         """
