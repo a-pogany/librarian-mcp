@@ -3,6 +3,7 @@ Hierarchical document chunking with structure awareness
 """
 
 from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
 from docx import Document
 from docx.oxml.text.paragraph import CT_P
 from docx.oxml.table import CT_Tbl
@@ -11,6 +12,17 @@ import re
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DocumentChunk:
+    """Represents a chunk of a document"""
+    chunk_id: str  # e.g., "path/to/doc.md#chunk_0"
+    parent_doc: str  # Original document path
+    content: str  # Chunk text content
+    chunk_index: int  # Position in document (0, 1, 2, ...)
+    heading: Optional[str]  # Associated heading (if any)
+    metadata: Dict[str, Any]  # Inherits from parent + chunk-specific
 
 
 class DocumentChunker:
@@ -33,6 +45,207 @@ class DocumentChunker:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.respect_boundaries = respect_boundaries
+
+        # Approximate token calculation: 1 token ≈ 4 chars
+        self.chunk_chars = chunk_size * 4
+        self.overlap_chars = chunk_overlap * 4
+
+    def chunk_document(
+        self,
+        doc_id: str,
+        content: str,
+        metadata: Dict[str, Any],
+        file_type: str = None
+    ) -> List[DocumentChunk]:
+        """
+        Split document into chunks (works with all file types)
+
+        Args:
+            doc_id: Document identifier (file path)
+            content: Full document content
+            metadata: Document metadata (product, component, etc.)
+            file_type: File extension (.md, .txt, .docx)
+
+        Returns:
+            List of document chunks
+        """
+        if not content or len(content) < self.chunk_chars:
+            # Document is small enough, return as single chunk
+            return [DocumentChunk(
+                chunk_id=f"{doc_id}#chunk_0",
+                parent_doc=doc_id,
+                content=content,
+                chunk_index=0,
+                heading=None,
+                metadata={**metadata, 'is_chunked': False}
+            )]
+
+        # Use semantic chunking for markdown files
+        if file_type == '.md':
+            return self._semantic_chunking_markdown(doc_id, content, metadata)
+        else:
+            # Fixed-size chunking for other file types
+            return self._fixed_size_chunking(doc_id, content, metadata)
+
+    def _semantic_chunking_markdown(
+        self,
+        doc_id: str,
+        content: str,
+        metadata: Dict[str, Any]
+    ) -> List[DocumentChunk]:
+        """
+        Split markdown on semantic boundaries (headings)
+        Falls back to fixed-size if no headings found
+        """
+        # Extract sections by heading
+        sections = self._extract_markdown_sections(content)
+
+        if len(sections) <= 1:
+            # No meaningful headings, use fixed size
+            return self._fixed_size_chunking(doc_id, content, metadata)
+
+        chunks = []
+        for idx, (heading, section_content) in enumerate(sections):
+            # If section is too large, split it further
+            if len(section_content) > self.chunk_chars * 2:
+                sub_chunks = self._split_large_section(section_content)
+
+                for sub_idx, sub_content in enumerate(sub_chunks):
+                    chunks.append(DocumentChunk(
+                        chunk_id=f"{doc_id}#chunk_{idx}_{sub_idx}",
+                        parent_doc=doc_id,
+                        content=sub_content,
+                        chunk_index=idx * 10 + sub_idx,
+                        heading=heading,
+                        metadata={
+                            **metadata,
+                            'is_chunked': True,
+                            'chunk_method': 'semantic',
+                            'heading': heading
+                        }
+                    ))
+            else:
+                chunks.append(DocumentChunk(
+                    chunk_id=f"{doc_id}#chunk_{idx}",
+                    parent_doc=doc_id,
+                    content=section_content,
+                    chunk_index=idx,
+                    heading=heading,
+                    metadata={
+                        **metadata,
+                        'is_chunked': True,
+                        'chunk_method': 'semantic',
+                        'heading': heading
+                    }
+                ))
+
+        return chunks
+
+    def _extract_markdown_sections(self, content: str) -> List[tuple]:
+        """
+        Extract sections by markdown headings
+
+        Returns:
+            List of (heading, content) tuples
+        """
+        # Match markdown headings (## or ###)
+        heading_pattern = r'^(#{2,3})\s+(.+)$'
+
+        sections = []
+        current_heading = None
+        current_content = []
+
+        for line in content.split('\n'):
+            match = re.match(heading_pattern, line)
+
+            if match:
+                # Save previous section
+                if current_content:
+                    sections.append((
+                        current_heading,
+                        '\n'.join(current_content).strip()
+                    ))
+
+                # Start new section
+                current_heading = match.group(2).strip()
+                current_content = [line]  # Include heading in content
+            else:
+                current_content.append(line)
+
+        # Add final section
+        if current_content:
+            sections.append((
+                current_heading,
+                '\n'.join(current_content).strip()
+            ))
+
+        return sections
+
+    def _fixed_size_chunking(
+        self,
+        doc_id: str,
+        content: str,
+        metadata: Dict[str, Any]
+    ) -> List[DocumentChunk]:
+        """
+        Split into fixed-size chunks with overlap
+        """
+        chunks = []
+        start = 0
+        chunk_idx = 0
+
+        while start < len(content):
+            # Extract chunk
+            end = start + self.chunk_chars
+            chunk_content = content[start:end]
+
+            # Try to end at sentence boundary if possible
+            if end < len(content):
+                # Look for sentence ending (. ! ?) in last 200 chars
+                last_period = chunk_content.rfind('. ', -200)
+                if last_period > 0:
+                    end = start + last_period + 1
+                    chunk_content = content[start:end]
+
+            chunks.append(DocumentChunk(
+                chunk_id=f"{doc_id}#chunk_{chunk_idx}",
+                parent_doc=doc_id,
+                content=chunk_content.strip(),
+                chunk_index=chunk_idx,
+                heading=None,
+                metadata={
+                    **metadata,
+                    'is_chunked': True,
+                    'chunk_method': 'fixed'
+                }
+            ))
+
+            # Move to next chunk with overlap
+            start = end - self.overlap_chars
+            chunk_idx += 1
+
+        return chunks
+
+    def _split_large_section(self, content: str) -> List[str]:
+        """Split a large section into smaller fixed-size chunks"""
+        sub_chunks = []
+        start = 0
+
+        while start < len(content):
+            end = start + self.chunk_chars
+            sub_chunk = content[start:end]
+
+            # Try to end at sentence boundary
+            if end < len(content):
+                last_period = sub_chunk.rfind('. ', -200)
+                if last_period > 0:
+                    end = start + last_period + 1
+                    sub_chunk = content[start:end]
+
+            sub_chunks.append(sub_chunk.strip())
+            start = end - self.overlap_chars
+
+        return sub_chunks
 
     def chunk_docx(self, file_path: str) -> List[Dict[str, Any]]:
         """

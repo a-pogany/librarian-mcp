@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Any
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import logging
@@ -188,27 +188,62 @@ class FileIndexer:
             self.enable_embeddings = False
             raise
 
-    def _index_embeddings_with_chunks(self, file_path: Path, parsed_content: str, product: str, component: str, file_type: str):
+    def _index_embeddings_with_chunks(self, file_path: Path, parsed_content: str, product: str, component: str, file_type: str, enhanced_metadata: Dict[str, Any] = None):
         """Generate and store embeddings for document chunks"""
         chunks = []
 
-        # Use hierarchical chunking for DOCX files
-        if file_type == '.docx' and self.chunker:
+        # Use chunker if enabled
+        if self.chunker:
             try:
-                chunks = self.chunker.chunk_docx(str(file_path))
-                logger.debug(f"Created {len(chunks)} chunks for {file_path.name}")
+                # Get relative path for doc_id
+                relative_path = self.get_relative_path(str(file_path))
+
+                # Basic metadata
+                base_metadata = {
+                    'product': product,
+                    'component': component,
+                    'file_type': file_type
+                }
+
+                # Merge with enhanced metadata
+                if enhanced_metadata:
+                    base_metadata.update(enhanced_metadata)
+
+                # Use hierarchical chunking for DOCX files
+                if file_type == '.docx':
+                    chunks = self.chunker.chunk_docx(str(file_path))
+                    logger.debug(f"Created {len(chunks)} chunks for {file_path.name}")
+                else:
+                    # Use new chunk_document method for all file types
+                    chunk_objects = self.chunker.chunk_document(
+                        doc_id=relative_path,
+                        content=parsed_content,
+                        metadata=base_metadata,
+                        file_type=file_type
+                    )
+
+                    # Convert DocumentChunk objects to dict format
+                    chunks = []
+                    for chunk_obj in chunk_objects:
+                        chunks.append({
+                            'content': chunk_obj.content,
+                            'metadata': chunk_obj.metadata
+                        })
+
+                    logger.debug(f"Created {len(chunks)} chunks for {file_path.name}")
+
             except Exception as e:
                 logger.error(f"Chunking failed for {file_path}, falling back to full document: {e}")
                 # Fall back to single chunk
                 chunks = [{
                     'content': parsed_content,
-                    'metadata': {'chunk_type': 'full_document', 'chunk_index': 0}
+                    'metadata': {'chunk_type': 'full_document', 'chunk_index': 0, 'is_chunked': False}
                 }]
         else:
-            # For non-DOCX files, use simple chunking or full document
+            # Chunking disabled, use full document
             chunks = [{
                 'content': parsed_content,
-                'metadata': {'chunk_type': 'full_document', 'chunk_index': 0}
+                'metadata': {'chunk_type': 'full_document', 'chunk_index': 0, 'is_chunked': False}
             }]
 
         if not chunks:
@@ -284,6 +319,60 @@ class FileIndexer:
             'duration_seconds': round(duration, 2)
         }
 
+    def _extract_frontmatter_tags(self, content: str) -> List[str]:
+        """Extract tags from YAML frontmatter"""
+        import re
+
+        # Match YAML frontmatter: ---\n...\n---
+        match = re.match(r'^---\n(.*?)\n---', content, re.DOTALL)
+
+        if not match:
+            return []
+
+        try:
+            import yaml
+            frontmatter = yaml.safe_load(match.group(1))
+            tags = frontmatter.get('tags', [])
+            # Ensure tags is a list
+            if isinstance(tags, str):
+                # Support comma-separated tags
+                return [t.strip() for t in tags.split(',')]
+            elif isinstance(tags, list):
+                return tags
+            else:
+                return []
+        except Exception as e:
+            logger.debug(f"Error parsing frontmatter: {e}")
+            return []
+
+    def _infer_doc_type(self, file_path: Path, content: str) -> str:
+        """Infer document type from filename and content"""
+        filename_lower = file_path.name.lower()
+        content_lower = content.lower()
+
+        # Check filename patterns
+        if 'api' in filename_lower or 'endpoint' in filename_lower:
+            return 'api'
+        elif 'architecture' in filename_lower or 'design' in filename_lower:
+            return 'architecture'
+        elif 'guide' in filename_lower or 'tutorial' in filename_lower:
+            return 'guide'
+        elif 'reference' in filename_lower or 'spec' in filename_lower:
+            return 'reference'
+        elif 'readme' in filename_lower:
+            return 'readme'
+
+        # Check content patterns (first 500 chars)
+        content_sample = content_lower[:500]
+        if 'class ' in content_sample or 'function ' in content_sample:
+            return 'api'
+        elif 'architecture' in content_sample or 'system design' in content_sample:
+            return 'architecture'
+        elif 'tutorial' in content_sample or 'guide' in content_sample:
+            return 'guide'
+
+        return 'documentation'  # default
+
     def index_file(self, file_path: str):
         """Index a single file"""
         path = Path(file_path)
@@ -316,6 +405,10 @@ class FileIndexer:
             logger.error(f"Parse error for {path}: {e}")
             return
 
+        # Extract enhanced metadata
+        tags = self._extract_frontmatter_tags(parsed.content)
+        doc_type = self._infer_doc_type(path, parsed.content)
+
         # Create document entry
         doc = {
             'path': rel_path,
@@ -327,7 +420,10 @@ class FileIndexer:
             'headings': parsed.headings,
             'metadata': parsed.metadata,
             'size_bytes': path.stat().st_size,
-            'last_modified': datetime.fromtimestamp(path.stat().st_mtime).isoformat()
+            'last_modified': datetime.fromtimestamp(path.stat().st_mtime).isoformat(),
+            'indexed_at': datetime.now().isoformat(),
+            'doc_type': doc_type,
+            'tags': tags
         }
 
         # Add to index
@@ -337,7 +433,22 @@ class FileIndexer:
         # Generate and store embeddings with chunking if enabled (Phase 2)
         if self.enable_embeddings and self.embedding_generator and self.vector_db:
             try:
-                self._index_embeddings_with_chunks(path, parsed.content, product, component, path.suffix)
+                # Pass enhanced metadata to embeddings
+                enhanced_metadata = {
+                    'doc_type': doc_type,
+                    'tags': tags,
+                    'last_modified': doc['last_modified'],
+                    'indexed_at': doc['indexed_at'],
+                    'file_size': doc['size_bytes']
+                }
+                self._index_embeddings_with_chunks(
+                    path,
+                    parsed.content,
+                    product,
+                    component,
+                    path.suffix,
+                    enhanced_metadata
+                )
             except Exception as e:
                 logger.error(f"Error generating embeddings for {rel_path}: {e}")
 

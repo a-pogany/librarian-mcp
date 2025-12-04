@@ -15,13 +15,26 @@
     "snippet_length": 200,
     "context_lines": 3,
     "min_keyword_length": 2,
-    "mode": "hybrid"
+    "mode": "hybrid",
+    "rerank_candidates": 50,
+    "rerank_keyword_threshold": 0.1
   },
   "embeddings": {
     "enabled": true,
     "model": "all-MiniLM-L6-v2",
     "persist_directory": null,
-    "semantic_weight": 0.5
+    "semantic_weight": 0.5,
+    "chunk_size": 512,
+    "chunk_overlap": 128
+  },
+  "chunking": {
+    "enabled": true,
+    "respect_boundaries": true
+  },
+  "metadata": {
+    "extract_tags": true,
+    "infer_doc_type": true,
+    "track_modifications": true
   },
   "mcp": {
     "transport": "http-sse",

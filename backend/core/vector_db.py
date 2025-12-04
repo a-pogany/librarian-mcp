@@ -87,6 +87,24 @@ class VectorDatabase:
             logger.error(f"Error initializing ChromaDB: {e}")
             raise
 
+    def _sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Sanitize metadata for ChromaDB (only accepts str, int, float, bool, None)
+
+        Converts lists to comma-separated strings
+        """
+        sanitized = {}
+        for key, value in metadata.items():
+            if isinstance(value, list):
+                # Convert lists (like tags) to comma-separated strings
+                sanitized[key] = ', '.join(str(v) for v in value) if value else ''
+            elif isinstance(value, (str, int, float, bool)) or value is None:
+                sanitized[key] = value
+            else:
+                # Convert other types to string
+                sanitized[key] = str(value)
+        return sanitized
+
     def add_documents(
         self,
         ids: List[str],
@@ -108,10 +126,13 @@ class VectorDatabase:
             # Convert numpy array to list for ChromaDB
             embeddings_list = embeddings.tolist()
 
+            # Sanitize metadata (ChromaDB only accepts primitive types)
+            sanitized_metadatas = [self._sanitize_metadata(m) for m in metadatas]
+
             self.collection.add(
                 ids=ids,
                 embeddings=embeddings_list,
-                metadatas=metadatas
+                metadatas=sanitized_metadatas
             )
 
             logger.debug(f"Added {len(ids)} documents to vector database")

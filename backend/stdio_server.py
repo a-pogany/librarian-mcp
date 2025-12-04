@@ -81,11 +81,16 @@ def main():
 
     # Create hybrid search engine
     semantic_weight = config.get('embeddings', {}).get('semantic_weight', 0.5)
+    rerank_candidates = config.get('search', {}).get('rerank_candidates', 50)
+    rerank_keyword_threshold = config.get('search', {}).get('rerank_keyword_threshold', 0.1)
+
     search_engine = HybridSearchEngine(
         keyword_engine=keyword_engine,
         semantic_engine=semantic_engine,
         default_mode=search_mode,
-        semantic_weight=semantic_weight
+        semantic_weight=semantic_weight,
+        rerank_candidates=rerank_candidates,
+        rerank_keyword_threshold=rerank_keyword_threshold
     )
 
     logger.info("Hybrid search engine initialized in '%s' mode", search_engine.get_mode())

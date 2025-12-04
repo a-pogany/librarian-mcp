@@ -15,10 +15,11 @@ class HybridSearchEngine:
     """
     Hybrid search combining keyword and semantic search
 
-    Supports three modes:
+    Supports four modes:
     - keyword: Pure keyword search
     - semantic: Pure vector similarity search
-    - hybrid: Combined search with configurable weighting
+    - hybrid: Combined search with configurable weighting (RRF or weighted average)
+    - rerank: Two-stage search (semantic candidates + keyword filtering)
     """
 
     def __init__(
@@ -27,7 +28,9 @@ class HybridSearchEngine:
         semantic_engine: Optional[SemanticSearchEngine] = None,
         default_mode: str = "hybrid",
         semantic_weight: float = 0.5,
-        use_rrf: bool = True
+        use_rrf: bool = True,
+        rerank_candidates: int = 50,
+        rerank_keyword_threshold: float = 0.1
     ):
         """
         Initialize hybrid search engine
@@ -35,23 +38,27 @@ class HybridSearchEngine:
         Args:
             keyword_engine: Keyword search engine
             semantic_engine: Semantic search engine (optional for keyword-only mode)
-            default_mode: Default search mode (keyword, semantic, or hybrid)
+            default_mode: Default search mode (keyword, semantic, hybrid, or rerank)
             semantic_weight: Weight for semantic scores in hybrid mode (0-1)
             use_rrf: Use Reciprocal Rank Fusion instead of weighted average
+            rerank_candidates: Number of candidates for reranking mode
+            rerank_keyword_threshold: Minimum keyword score threshold for reranking
         """
         self.keyword_engine = keyword_engine
         self.semantic_engine = semantic_engine
         self.default_mode = default_mode
         self.semantic_weight = semantic_weight
         self.use_rrf = use_rrf
+        self.rerank_candidates = rerank_candidates
+        self.rerank_keyword_threshold = rerank_keyword_threshold
 
         # Validate mode
-        if default_mode not in ['keyword', 'semantic', 'hybrid']:
+        if default_mode not in ['keyword', 'semantic', 'hybrid', 'rerank']:
             logger.warning(f"Invalid mode '{default_mode}', defaulting to 'keyword'")
             self.default_mode = 'keyword'
 
         # Validate semantic mode availability
-        if default_mode in ['semantic', 'hybrid'] and not semantic_engine:
+        if default_mode in ['semantic', 'hybrid', 'rerank'] and not semantic_engine:
             logger.warning(f"Semantic engine not available, falling back to keyword mode")
             self.default_mode = 'keyword'
 
@@ -91,6 +98,8 @@ class HybridSearchEngine:
             return self._semantic_search(query, product, component, file_types, max_results)
         elif search_mode == 'hybrid':
             return self._hybrid_search(query, product, component, file_types, max_results)
+        elif search_mode == 'rerank':
+            return self._rerank_search(query, product, component, file_types, max_results)
         else:
             logger.warning(f"Unknown mode '{search_mode}', using keyword search")
             return self._keyword_search(query, product, component, file_types, max_results)
@@ -294,6 +303,121 @@ class HybridSearchEngine:
 
         return results
 
+    def _rerank_search(
+        self,
+        query: str,
+        product: Optional[str],
+        component: Optional[str],
+        file_types: Optional[List[str]],
+        max_results: int
+    ) -> List[Dict[str, Any]]:
+        """
+        Two-stage reranking search:
+        1. Semantic search for broad recall (N candidates)
+        2. Keyword scoring for precision filtering
+
+        This filters out semantically similar but contextually irrelevant documents.
+        """
+        if not self.semantic_engine:
+            logger.warning("Semantic engine not available, falling back to keyword")
+            return self._keyword_search(query, product, component, file_types, max_results)
+
+        logger.debug(f"Executing rerank search: {query}")
+
+        # Stage 1: Semantic search (broad recall)
+        semantic_results = self.semantic_engine.search(
+            query=query,
+            product=product,
+            component=component,
+            file_types=file_types,
+            max_results=self.rerank_candidates
+        )
+
+        # Stage 2: Keyword reranking
+        reranked = []
+        keywords = query.lower().split()
+
+        for result in semantic_results:
+            # Calculate keyword score for this document
+            keyword_score = self._calculate_keyword_score(
+                keywords=keywords,
+                content=result.get('snippet', ''),
+                filename=result.get('file_name', '')
+            )
+
+            # Filter out results with no keyword matches
+            if keyword_score < self.rerank_keyword_threshold:
+                logger.debug(f"Filtered out {result['file_name']} (keyword_score={keyword_score:.2f})")
+                continue
+
+            # Combine scores (70% semantic, 30% keyword)
+            semantic_score = result.get('similarity_score', 0.0)
+            combined_score = 0.7 * semantic_score + 0.3 * keyword_score
+
+            # Create reranked result
+            reranked.append({
+                'id': result['id'],
+                'file_path': result['file_path'],
+                'product': result['product'],
+                'component': result['component'],
+                'file_name': result['file_name'],
+                'file_type': result['file_type'],
+                'snippet': result['snippet'],
+                'relevance_score': round(combined_score, 2),
+                'semantic_score': round(semantic_score, 2),
+                'keyword_score': round(keyword_score, 2),
+                'search_mode': 'rerank',
+                'last_modified': result['last_modified']
+            })
+
+        # Sort by combined score
+        reranked.sort(key=lambda x: x['relevance_score'], reverse=True)
+
+        logger.debug(f"Reranking: {len(semantic_results)} candidates → {len(reranked)} filtered results")
+
+        # Return top N results
+        return reranked[:max_results]
+
+    def _calculate_keyword_score(
+        self,
+        keywords: List[str],
+        content: str,
+        filename: str
+    ) -> float:
+        """
+        Calculate keyword relevance score for a document
+
+        Args:
+            keywords: Query keywords (already lowercased)
+            content: Document content/snippet
+            filename: Document filename
+
+        Returns:
+            Normalized keyword score (0-1)
+        """
+        content_lower = content.lower()
+        filename_lower = filename.lower()
+
+        score = 0
+        max_score = 0
+
+        for keyword in keywords:
+            if len(keyword) < 2:
+                continue
+
+            max_score += 5  # Maximum possible score per keyword
+
+            # Filename match: +3 points
+            if keyword in filename_lower:
+                score += 3
+
+            # Content match: +1 per occurrence (capped at 5)
+            count = min(content_lower.count(keyword), 5)
+            score += count
+
+        # Normalize by max possible score
+        return score / max_score if max_score > 0 else 0.0
+
     def get_document(self, path: str, section: Optional[str] = None) -> Optional[Dict]:
         """
         Get full document content (delegates to keyword engine)
@@ -316,12 +440,12 @@ class HybridSearchEngine:
         Set default search mode
 
         Args:
-            mode: Search mode (keyword, semantic, or hybrid)
+            mode: Search mode (keyword, semantic, hybrid, or rerank)
         """
-        if mode not in ['keyword', 'semantic', 'hybrid']:
+        if mode not in ['keyword', 'semantic', 'hybrid', 'rerank']:
             raise ValueError(f"Invalid mode: {mode}")
 
-        if mode in ['semantic', 'hybrid'] and not self.semantic_engine:
+        if mode in ['semantic', 'hybrid', 'rerank'] and not self.semantic_engine:
             raise ValueError(f"Cannot set mode to '{mode}': semantic engine not available")
 
         self.default_mode = mode

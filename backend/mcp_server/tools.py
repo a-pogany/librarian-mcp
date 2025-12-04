@@ -20,27 +20,37 @@ def search_documentation(
     product: Optional[str] = None,
     component: Optional[str] = None,
     file_types: Optional[List[str]] = None,
+    doc_type: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    modified_after: Optional[str] = None,
+    modified_before: Optional[str] = None,
     max_results: int = 10
 ) -> dict:
     """
-    Search across all documentation using keyword matching.
+    Search across all documentation with enhanced filtering.
 
     Args:
         query: Search keywords (space-separated)
         product: Filter by product name (e.g., "symphony")
         component: Filter by component (e.g., "PAM")
         file_types: Filter by file extensions (e.g., [".md", ".docx"])
+        doc_type: Filter by document type (api, guide, architecture, reference, readme, documentation)
+        tags: Filter by tags (documents with at least one matching tag)
+        modified_after: Only docs modified after this date (ISO format: 2024-01-01)
+        modified_before: Only docs modified before this date (ISO format: 2024-12-31)
         max_results: Maximum number of results (default: 10, max: 50)
 
     Returns:
         Dictionary with search results including file paths, snippets,
-        and relevance scores
+        relevance scores, and metadata
 
     Example:
         search_documentation(
             query="authentication OAuth",
             product="symphony",
-            component="PAM",
+            doc_type="api",
+            tags=["security"],
+            modified_after="2024-01-01",
             max_results=5
         )
     """
@@ -50,17 +60,30 @@ def search_documentation(
             product=product,
             component=component,
             file_types=file_types,
-            max_results=min(max_results, 50)
+            max_results=min(max_results, 50) * 2  # Get more for filtering
+        )
+
+        # Apply enhanced metadata filters
+        filtered_results = _apply_metadata_filters(
+            results,
+            doc_type=doc_type,
+            tags=tags,
+            modified_after=modified_after,
+            modified_before=modified_before
         )
 
         return {
-            "results": results,
-            "total": len(results),
+            "results": filtered_results[:max_results],
+            "total": len(filtered_results),
             "query": query,
             "filters": {
                 "product": product,
                 "component": component,
-                "file_types": file_types
+                "file_types": file_types,
+                "doc_type": doc_type,
+                "tags": tags,
+                "modified_after": modified_after,
+                "modified_before": modified_before
             }
         }
     except Exception as e:
@@ -69,6 +92,54 @@ def search_documentation(
             "error": "Search failed",
             "detail": str(e)
         }
+
+
+def _apply_metadata_filters(
+    results: List[dict],
+    doc_type: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    modified_after: Optional[str] = None,
+    modified_before: Optional[str] = None
+) -> List[dict]:
+    """Apply metadata-based filters to search results"""
+    from datetime import datetime
+
+    filtered = []
+
+    for result in results:
+        # Doc type filter
+        if doc_type and result.get('doc_type') != doc_type:
+            continue
+
+        # Tags filter (at least one tag must match)
+        if tags:
+            result_tags = result.get('tags', [])
+            if not any(tag in result_tags for tag in tags):
+                continue
+
+        # Date filters
+        modified_str = result.get('last_modified')
+        if modified_str:
+            try:
+                modified_dt = datetime.fromisoformat(modified_str)
+
+                if modified_after:
+                    after_dt = datetime.fromisoformat(modified_after)
+                    if modified_dt < after_dt:
+                        continue
+
+                if modified_before:
+                    before_dt = datetime.fromisoformat(modified_before)
+                    if modified_dt >= before_dt:
+                        continue
+
+            except (ValueError, TypeError) as e:
+                logger.debug(f"Error parsing date: {e}")
+                continue
+
+        filtered.append(result)
+
+    return filtered
 
 
 @mcp.tool()
