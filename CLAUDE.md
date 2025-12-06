@@ -6,13 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Librarian MCP** - Enterprise RAG Documentation Search System
 
-**Version**: 2.0.0 (Production Ready)
-**Status**: ✅ All Phase 1 & Phase 2 features complete
+**Version**: 2.0.3 (Production Ready)
+**Status**: ✅ All Phase 1, Phase 2, and Phase 2.5 features complete
 
 **Librarian** is an enterprise-grade documentation search system enabling LLMs to autonomously retrieve technical documentation through MCP with advanced RAG capabilities:
 
 - **✅ Phase 1:** HTTP/SSE MCP server, keyword search, multi-format support (.md, .txt, .docx), real-time file watching
 - **✅ Phase 2 (v2.0.0):** E5-large-v2 embeddings (1024d), hierarchical chunking (512-token, 128-overlap), two-stage reranking, persistent ChromaDB, query caching, BM25 search, RRF hybrid fusion
+- **✅ Phase 2.5 (v2.0.3):** Reranking mode, enhanced chunking (all file types), rich metadata (tags, doc types, temporal filtering)
 - **🔜 Phase 3:** REST API + React Web UI
 
 **Key Capabilities**:
@@ -89,7 +90,7 @@ HybridSearchEngine (RRF Fusion)
     ├─ KeywordEngine (BM25 + relevance scoring)
     ├─ SemanticEngine (e5-large-v2 + cross-encoder reranking)
     ├─ QueryCache (5x speedup for repeated queries)
-    └─ Mode: keyword | semantic | hybrid (default: hybrid with RRF)
+    └─ Mode: keyword | semantic | hybrid | rerank (default: hybrid with RRF)
     ↓
 MCP Server (HTTP/SSE or STDIO)
     ↓
@@ -119,11 +120,14 @@ Return Results (150-200ms latency)
 - `MarkdownParser`, `TextParser`, `DOCXParser` - Extract content/headings with encoding detection
 - Automatic encoding fallback using chardet
 
-**backend/core/indexer.py**
+**backend/core/indexer.py** (Enhanced v2.0.3)
 - `DocumentIndex` - In-memory index with product/component hierarchy
 - `FileIndexer` - Scans docs folder, builds dual index (keyword + vectors)
 - `FileWatcher` - Monitors file changes, auto-updates both indices
 - Optional embedding generation during indexing (controlled by config)
+- **NEW**: `_extract_frontmatter_tags()` - Parse YAML frontmatter for tags (list or comma-separated)
+- **NEW**: `_infer_doc_type()` - Classify documents by filename and content patterns
+- **NEW**: Enhanced metadata capture (tags, doc_type, indexed_at, last_modified)
 
 **backend/core/search.py**
 - `SearchEngine` - Keyword search with weighted relevance scoring
@@ -131,10 +135,13 @@ Return Results (150-200ms latency)
 - Snippet extraction with context lines
 - Optional section extraction by heading name
 
-**backend/core/chunking.py** (NEW in v2.0.0)
+**backend/core/chunking.py** (Enhanced v2.0.3)
 - `DocumentChunker` - Hierarchical document chunking (512-token, 128-overlap)
 - Structure-aware: preserves sections, headings, tables
 - Chunk metadata: section, page, heading level, position
+- **NEW**: `chunk_document()` - Unified chunking for all file types (.md, .txt, .docx)
+- **NEW**: Semantic chunking for Markdown (heading-based splitting on ## and ###)
+- **NEW**: Fixed-size chunking for text files with sentence boundary preservation
 - Impact: 100% coverage (was 0.5% with truncation)
 
 **backend/core/embeddings.py** (Enhanced v2.0.0)
@@ -143,12 +150,13 @@ Return Results (150-200ms latency)
 - Automatic query/passage prefixing for e5 models
 - Batch processing support for efficiency
 
-**backend/core/vector_db.py** (Enhanced v2.0.0)
+**backend/core/vector_db.py** (Enhanced v2.0.3)
 - `VectorDatabase` - ChromaDB wrapper with persistent storage
 - **Persistent storage** (duckdb+parquet backend)
 - Optimized HNSW parameters (construction_ef=200, search_ef=100, M=16)
 - Batch insertion (1000 chunks per batch)
 - Scales to 10,000+ documents
+- **NEW**: `_sanitize_metadata()` - Converts lists to comma-separated strings for ChromaDB compatibility
 
 **backend/core/reranker.py** (NEW in v2.0.0)
 - `Reranker` - Two-stage reranking with cross-encoder
@@ -173,17 +181,26 @@ Return Results (150-200ms latency)
 - Automatic reranking pipeline when enabled
 - Returns documents ranked by rerank scores
 
-**backend/core/hybrid_search.py** (Enhanced v2.0.0)
+**backend/core/hybrid_search.py** (Enhanced v2.0.3)
 - `HybridSearchEngine` - Hybrid search with RRF fusion
-- Three modes: keyword, semantic, hybrid (default: hybrid)
+- Four modes: keyword, semantic, hybrid, **rerank** (Phase 2.5)
 - **RRF (Reciprocal Rank Fusion)**: score = 1/(k + rank)
+- **NEW Rerank Mode**: Two-stage search with semantic + keyword filtering
+  - `_rerank_search()` - Semantic retrieval followed by keyword refinement
+  - `_calculate_keyword_score()` - Keyword relevance scoring
+  - Configurable candidates (default: 50) and threshold (default: 0.1)
 - Better than weighted average for rank combination
 - Configurable fusion strategy (RRF vs weighted)
 
-**backend/mcp_server/tools.py**
+**backend/mcp_server/tools.py** (Enhanced v2.0.3)
 - Defines 5 MCP tools exposed to LLMs
 - Uses FastMCP decorators for tool registration
 - Tools: search_documentation, get_document, list_products, list_components, get_index_status
+- **NEW**: Enhanced `search_documentation()` with metadata filters:
+  - `doc_type` - Filter by document type (api, guide, architecture, reference, readme, documentation)
+  - `tags` - Filter by tags extracted from YAML frontmatter
+  - `modified_after` / `modified_before` - Temporal filtering with ISO 8601 dates
+- **NEW**: `_apply_metadata_filters()` - Post-search metadata filtering helper
 - Works transparently with all search modes
 
 **backend/main.py**
@@ -245,9 +262,14 @@ python /path/to/backend/stdio_server.py
 
 ### Available MCP Tools
 
-1. **search_documentation** - Search with filters (product, component, file_types)
-   - Uses configured search mode (keyword, semantic, or hybrid)
+1. **search_documentation** - Search with filters (product, component, file_types, **doc_type, tags, modified_after, modified_before**)
+   - Uses configured search mode (keyword, semantic, hybrid, or rerank)
    - Returns documents with relevance scores
+   - **NEW in v2.0.3**: Metadata filters
+     - `doc_type`: Filter by document type (api, guide, architecture, reference, readme, documentation)
+     - `tags`: Filter by tags from YAML frontmatter (OR logic - at least one must match)
+     - `modified_after`: ISO 8601 date - only docs modified after this date
+     - `modified_before`: ISO 8601 date - only docs modified before this date
 2. **get_document** - Retrieve full content, optionally extract section by heading
 3. **list_products** - List all products with component counts
 4. **list_components** - List components for specific product with doc counts
@@ -270,13 +292,26 @@ python /path/to/backend/stdio_server.py
     "snippet_length": 200,           // Characters in snippets
     "context_lines": 3,              // Lines around matches
     "min_keyword_length": 2,         // Minimum keyword length
-    "mode": "hybrid"                 // keyword | semantic | hybrid
+    "mode": "hybrid",                // keyword | semantic | hybrid | rerank
+    "rerank_candidates": 50,         // Candidates for rerank mode (Phase 2.5)
+    "rerank_keyword_threshold": 0.1  // Keyword score threshold (Phase 2.5)
   },
   "embeddings": {
     "enabled": true,                 // Enable RAG/semantic search
     "model": "all-MiniLM-L6-v2",     // Sentence transformer model
     "persist_directory": null,       // Optional persistent storage
-    "semantic_weight": 0.5           // Weight for hybrid mode (0-1)
+    "semantic_weight": 0.5,          // Weight for hybrid mode (0-1)
+    "chunk_size": 512,               // Tokens per chunk (Phase 2.5)
+    "chunk_overlap": 128             // Overlap between chunks (Phase 2.5)
+  },
+  "chunking": {
+    "enabled": true,                 // Enable document chunking (Phase 2.5)
+    "respect_boundaries": true       // Respect sentence/section boundaries
+  },
+  "metadata": {
+    "extract_tags": true,            // Extract tags from frontmatter (Phase 2.5)
+    "infer_doc_type": true,          // Infer document types (Phase 2.5)
+    "track_modifications": true      // Track last_modified timestamps (Phase 2.5)
   },
   "mcp": {
     "transport": "http-sse",
@@ -294,8 +329,8 @@ MCP_HOST=127.0.0.1
 MCP_PORT=3001
 LOG_LEVEL=info  # debug, info, warning, error
 
-# Search mode configuration (Phase 2)
-SEARCH_MODE=hybrid         # keyword | semantic | hybrid
+# Search mode configuration (Phase 2 & 2.5)
+SEARCH_MODE=rerank         # keyword | semantic | hybrid | rerank
 ENABLE_EMBEDDINGS=true     # Enable/disable RAG functionality
 ```
 
@@ -316,6 +351,14 @@ ENABLE_EMBEDDINGS=true     # Enable/disable RAG functionality
 - Formula: `score = (1-weight) * keyword + weight * semantic`
 - Best of both worlds: handles both exact and conceptual searches
 - Configurable `semantic_weight` (default: 0.5)
+
+**Rerank Mode** (`SEARCH_MODE=rerank`, Phase 2.5):
+- Two-stage search: semantic retrieval + keyword refinement
+- Stage 1: Retrieve N candidates using semantic similarity (default: 50)
+- Stage 2: Score and filter candidates using keyword matching
+- Filters out semantically similar but contextually irrelevant documents
+- Combined score: 70% semantic + 30% keyword
+- Configurable `rerank_candidates` and `rerank_keyword_threshold`
 
 ## Critical Implementation Details
 

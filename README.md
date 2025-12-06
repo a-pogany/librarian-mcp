@@ -1,6 +1,6 @@
 # Librarian MCP - Enterprise RAG Documentation Search System
 
-**Version**: 2.0.0
+**Version**: 2.0.3
 **Status**: Production Ready
 
 A production-grade documentation search system that makes technical documentation accessible to LLMs and humans through an MCP (Model Context Protocol) server with enterprise-grade RAG (Retrieval Augmented Generation) capabilities.
@@ -23,6 +23,20 @@ A production-grade documentation search system that makes technical documentatio
 - **BM25 keyword search** (probabilistic scoring)
 - **Reciprocal Rank Fusion (RRF)** (hybrid search optimization)
 - **Semantic + Keyword hybrid search** (best of both worlds)
+
+**✅ Phase 2.5 (Complete - v2.0.3):**
+- **Reranking Mode** (two-stage search: semantic retrieval + keyword refinement)
+  - Filters semantically similar but contextually irrelevant documents
+  - Combines semantic (70%) and keyword (30%) scores
+  - Configurable candidates (default: 50) and threshold (default: 0.1)
+- **Enhanced Chunking** (all file types with semantic/fixed strategies)
+  - Semantic chunking for Markdown (heading-based on ## and ###)
+  - Fixed-size chunking for text files (512 tokens, 128 overlap)
+  - Sentence boundary preservation
+- **Rich Metadata** (tags, doc types, date filtering for temporal queries)
+  - Tag extraction from YAML frontmatter (list or comma-separated)
+  - Document type inference (6 types: api, guide, architecture, reference, readme, documentation)
+  - Temporal filtering with `modified_after` / `modified_before` (ISO 8601)
 
 **🔜 Phase 3 (Planned):**
 - REST API for HTTP access
@@ -140,7 +154,7 @@ The following tools should appear in Claude's available tools:
 
 ## Usage Examples
 
-### Semantic Search (Context-Aware)
+### Basic Search
 ```
 You (to Claude): "How do I implement OAuth2 authentication?"
 
@@ -175,6 +189,48 @@ Claude will use get_document:
 You: "What products do we have documentation for?"
 
 Claude will use list_products
+```
+
+### Metadata Filtering (v2.0.3)
+```
+You: "Find API documentation about authentication modified in the last 30 days"
+
+Claude will search with metadata filters:
+{
+  "query": "authentication",
+  "doc_type": "api",
+  "modified_after": "2024-11-04"
+}
+
+Returns only API docs tagged with authentication from the last month
+```
+
+### Tag-Based Search (v2.0.3)
+```
+You: "Show me all security-related guides"
+
+Claude will search with tag filter:
+{
+  "query": "security",
+  "tags": ["security", "auth", "encryption"]
+}
+
+Matches documents with YAML frontmatter:
+---
+tags: [security, best-practices]
+---
+```
+
+### Temporal Queries (v2.0.3)
+```
+You: "What changed in the architecture docs this week?"
+
+Claude will filter by date range:
+{
+  "query": "architecture",
+  "doc_type": "architecture",
+  "modified_after": "2024-11-27"
+}
 ```
 
 ## Architecture
