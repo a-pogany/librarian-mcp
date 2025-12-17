@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Librarian** is an enterprise-grade documentation search system enabling LLMs to autonomously retrieve technical documentation through MCP with advanced RAG capabilities:
 
-- **✅ Phase 1:** HTTP/SSE MCP server, keyword search, multi-format support (.md, .txt, .docx), real-time file watching
+- **✅ Phase 1:** HTTP/SSE MCP server, keyword search, multi-format support (.md, .txt, .docx, .eml), real-time file watching
 - **✅ Phase 2 (v2.0.0):** E5-large-v2 embeddings (1024d), hierarchical chunking (512-token, 128-overlap), two-stage reranking, persistent ChromaDB, query caching, BM25 search, RRF hybrid fusion
 - **✅ Phase 2.5 (v2.0.3):** Reranking mode, enhanced chunking (all file types), rich metadata (tags, doc types, temporal filtering)
 - **✅ Phase 3 (v2.1.0):** HyDE retrieval, semantic query caching, intelligent query routing, parent document context
@@ -124,7 +124,18 @@ Return Results (150-200ms latency)
 - `MarkdownParser`, `TextParser`, `DOCXParser` - Extract content/headings with encoding detection
 - Automatic encoding fallback using chardet
 
-**backend/core/indexer.py** (Enhanced v2.0.3)
+**backend/core/email_parser.py** (NEW in v2.1.0)
+- `EMLParser` - Parse EML files with email-specific preprocessing
+- `EmailPreprocessor` - Clean email content for RAG:
+  - Quote chain removal (On ... wrote:, > prefixed, Outlook-style, multi-language)
+  - Signature detection and removal (—, Regards, Best, etc.)
+- `ThreadIDGenerator` - Compute thread IDs from Message-ID/References/In-Reply-To
+- `EmailDeduplicator` - Hash-based deduplication across multiple PST exports
+- Attachment metadata extraction (filename, type, size)
+- Subject normalization (removes Re:, Fwd:, [tags])
+- Multi-language support (English, German, French, Spanish, Hungarian)
+
+**backend/core/indexer.py** (Enhanced v2.1.0)
 - `DocumentIndex` - In-memory index with product/component hierarchy
 - `FileIndexer` - Scans docs folder, builds dual index (keyword + vectors)
 - `FileWatcher` - Monitors file changes, auto-updates both indices
@@ -306,12 +317,19 @@ python /path/to/backend/stdio_server.py
    - `tags`: Filter by tags from YAML frontmatter (OR logic - at least one must match)
    - `modified_after`: ISO 8601 date - only docs modified after this date
    - `modified_before`: ISO 8601 date - only docs modified before this date
-2. **get_document** - Retrieve full content, optionally extract section by heading
-3. **list_products** - List all products with component counts
-4. **list_components** - List components for specific product with doc counts
-5. **get_index_status** - Index statistics, RAG status, and enhanced features status
-6. **analyze_query** - Analyze query characteristics and get recommended search mode
-7. **clear_search_cache** - Clear semantic query cache for fresh results
+2. **search_emails** - Search emails with email-specific filters
+   - `sender`: Filter by sender email address (partial match)
+   - `thread_id`: Filter by email thread ID
+   - `subject_contains`: Filter by subject line (partial match)
+   - `has_attachments`: Filter emails with/without attachments
+   - `date_after` / `date_before`: Date range filtering
+3. **get_email_thread** - Get all emails in a thread, chronologically ordered
+4. **get_document** - Retrieve full content, optionally extract section by heading
+5. **list_products** - List all products with component counts
+6. **list_components** - List components for specific product with doc counts
+7. **get_index_status** - Index statistics, RAG status, and enhanced features status
+8. **analyze_query** - Analyze query characteristics and get recommended search mode
+9. **clear_search_cache** - Clear semantic query cache for fresh results
 
 ## Configuration
 

@@ -8,6 +8,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import logging
 from .parsers import MarkdownParser, DOCXParser, TextParser, ParseResult
+from .email_parser import EMLParser
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,8 @@ class FileIndexer:
         self.parsers = {
             '.md': MarkdownParser(),
             '.txt': TextParser(),
-            '.docx': DOCXParser()
+            '.docx': DOCXParser(),
+            '.eml': EMLParser()
         }
         self.observer: Optional[Observer] = None
 

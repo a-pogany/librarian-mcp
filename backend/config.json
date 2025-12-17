@@ -5,10 +5,16 @@
   },
   "docs": {
     "root_path": "./docs",
-    "file_extensions": [".md", ".txt", ".docx"],
+    "file_extensions": [".md", ".txt", ".docx", ".eml"],
     "max_file_size_mb": 10,
     "watch_for_changes": true,
     "index_on_startup": true
+  },
+  "email": {
+    "remove_quotes": true,
+    "remove_signatures": true,
+    "extract_attachments": true,
+    "skip_duplicates": true
   },
   "search": {
     "max_results": 50,
