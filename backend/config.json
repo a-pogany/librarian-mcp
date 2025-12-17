@@ -1,7 +1,7 @@
 {
   "system": {
     "name": "Documentation Search MCP",
-    "version": "2.0.3"
+    "version": "2.1.0"
   },
   "docs": {
     "root_path": "./docs",
@@ -47,7 +47,16 @@
   },
   "cache": {
     "query_embedding_cache_size": 10000,
-    "result_cache_ttl": 300
+    "result_cache_ttl": 300,
+    "semantic_cache_enabled": true,
+    "semantic_cache_similarity_threshold": 0.92
+  },
+  "advanced_rag": {
+    "hyde_enabled": true,
+    "query_routing_enabled": true,
+    "parent_context_enabled": true,
+    "parent_context_include_siblings": true,
+    "parent_context_max_headings": 10
   },
   "mcp": {
     "transport": "http-sse",

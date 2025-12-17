@@ -24,10 +24,12 @@ def search_documentation(
     tags: Optional[List[str]] = None,
     modified_after: Optional[str] = None,
     modified_before: Optional[str] = None,
-    max_results: int = 10
+    max_results: int = 10,
+    mode: Optional[str] = None,
+    include_parent_context: Optional[bool] = None
 ) -> dict:
     """
-    Search across all documentation with enhanced filtering.
+    Search across all documentation with enhanced filtering and advanced RAG modes.
 
     Args:
         query: Search keywords (space-separated)
@@ -39,18 +41,19 @@ def search_documentation(
         modified_after: Only docs modified after this date (ISO format: 2024-01-01)
         modified_before: Only docs modified before this date (ISO format: 2024-12-31)
         max_results: Maximum number of results (default: 10, max: 50)
+        mode: Search mode - keyword, semantic, hybrid, rerank, hyde, or auto (auto selects best mode)
+        include_parent_context: Include parent document context (title, summary, headings)
 
     Returns:
         Dictionary with search results including file paths, snippets,
-        relevance scores, and metadata
+        relevance scores, metadata, and optionally parent context
 
     Example:
         search_documentation(
-            query="authentication OAuth",
+            query="how to configure authentication",
             product="symphony",
-            doc_type="api",
-            tags=["security"],
-            modified_after="2024-01-01",
+            mode="hyde",  # Use HyDE for conceptual queries
+            include_parent_context=True,
             max_results=5
         )
     """
@@ -60,7 +63,9 @@ def search_documentation(
             product=product,
             component=component,
             file_types=file_types,
-            max_results=min(max_results, 50) * 2  # Get more for filtering
+            max_results=min(max_results, 50) * 2,  # Get more for filtering
+            mode=mode,
+            include_parent_context=include_parent_context
         )
 
         # Apply enhanced metadata filters
@@ -72,10 +77,16 @@ def search_documentation(
             modified_before=modified_before
         )
 
+        # Determine the actual mode used
+        actual_mode = mode or search_engine.get_mode()
+        if mode == 'auto' and hasattr(search_engine, 'query_router') and search_engine.query_router:
+            actual_mode = search_engine.query_router.route(query)
+
         return {
             "results": filtered_results[:max_results],
             "total": len(filtered_results),
             "query": query,
+            "search_mode": actual_mode,
             "filters": {
                 "product": product,
                 "component": component,
@@ -246,21 +257,100 @@ def list_components(product: str) -> dict:
 @mcp.tool()
 def get_index_status() -> dict:
     """
-    Get current indexing status and statistics.
+    Get current indexing status, statistics, and advanced RAG capabilities.
 
     Returns:
-        Index status, file counts, and last update time
+        Index status, file counts, last update time, and enhanced features status
 
     Example:
         get_index_status()
     """
     try:
         status = indexer.get_status()
+
+        # Add search engine stats including enhanced features
+        if search_engine:
+            search_stats = search_engine.get_stats()
+            status['search_engine'] = search_stats
+
         return status
     except Exception as e:
         logger.error(f"Get status error: {e}")
         return {
             "error": "Failed to get status",
+            "detail": str(e)
+        }
+
+
+@mcp.tool()
+def analyze_query(query: str) -> dict:
+    """
+    Analyze a query to understand its characteristics and recommended search mode.
+
+    This tool helps understand how the search system interprets queries and
+    which search mode would be most effective.
+
+    Args:
+        query: The search query to analyze
+
+    Returns:
+        Query analysis including:
+        - word_count: Number of words in query
+        - query_type: Type of query (factual, conceptual, troubleshooting, navigational)
+        - complexity_score: How complex the query is (0-1)
+        - recommended_mode: Best search mode for this query
+        - reasoning: Explanation of the recommendation
+
+    Example:
+        analyze_query(query="how to configure OAuth authentication")
+    """
+    try:
+        if hasattr(search_engine, 'analyze_query'):
+            analysis = search_engine.analyze_query(query)
+            return analysis
+        else:
+            return {
+                "error": "Query analysis not available",
+                "detail": "Query router is not enabled"
+            }
+    except Exception as e:
+        logger.error(f"Query analysis error: {e}")
+        return {
+            "error": "Failed to analyze query",
+            "detail": str(e)
+        }
+
+
+@mcp.tool()
+def clear_search_cache() -> dict:
+    """
+    Clear the semantic query cache.
+
+    Use this if you need to force fresh search results or after
+    making significant changes to the documentation.
+
+    Returns:
+        Confirmation of cache clear
+
+    Example:
+        clear_search_cache()
+    """
+    try:
+        if hasattr(search_engine, 'clear_cache'):
+            search_engine.clear_cache()
+            return {
+                "success": True,
+                "message": "Search cache cleared successfully"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Cache not available"
+            }
+    except Exception as e:
+        logger.error(f"Clear cache error: {e}")
+        return {
+            "error": "Failed to clear cache",
             "detail": str(e)
         }
 

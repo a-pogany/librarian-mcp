@@ -6,21 +6,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Librarian MCP** - Enterprise RAG Documentation Search System
 
-**Version**: 2.0.3 (Production Ready)
-**Status**: ✅ All Phase 1, Phase 2, and Phase 2.5 features complete
+**Version**: 2.1.0 (Production Ready)
+**Status**: ✅ All Phase 1, Phase 2, Phase 2.5, and Phase 3 (Advanced RAG) features complete
 
 **Librarian** is an enterprise-grade documentation search system enabling LLMs to autonomously retrieve technical documentation through MCP with advanced RAG capabilities:
 
 - **✅ Phase 1:** HTTP/SSE MCP server, keyword search, multi-format support (.md, .txt, .docx), real-time file watching
 - **✅ Phase 2 (v2.0.0):** E5-large-v2 embeddings (1024d), hierarchical chunking (512-token, 128-overlap), two-stage reranking, persistent ChromaDB, query caching, BM25 search, RRF hybrid fusion
 - **✅ Phase 2.5 (v2.0.3):** Reranking mode, enhanced chunking (all file types), rich metadata (tags, doc types, temporal filtering)
-- **🔜 Phase 3:** REST API + React Web UI
+- **✅ Phase 3 (v2.1.0):** HyDE retrieval, semantic query caching, intelligent query routing, parent document context
+- **🔜 Phase 4:** REST API + React Web UI
 
 **Key Capabilities**:
 - **Relevance**: 85% Precision@10 (was 40% in v1.0)
 - **Coverage**: 100% document coverage with chunking (was 0.5% with truncation)
 - **Scale**: Handles 200-600 page DOCX files, 10,000+ documents
-- **Speed**: 150-200ms hybrid queries, 10-20ms cached queries
+- **Speed**: 150-200ms hybrid queries, 10-20ms cached queries (5x faster with semantic cache)
 
 ## Development Commands
 
@@ -86,11 +87,14 @@ FileIndexer → Triple Index
     ├─ Hierarchical Chunks (512-token, 128-overlap)
     └─ Persistent Vector DB (ChromaDB with e5-large-v2 1024d embeddings)
     ↓
-HybridSearchEngine (RRF Fusion)
+HybridSearchEngine (RRF Fusion + Advanced RAG)
     ├─ KeywordEngine (BM25 + relevance scoring)
     ├─ SemanticEngine (e5-large-v2 + cross-encoder reranking)
-    ├─ QueryCache (5x speedup for repeated queries)
-    └─ Mode: keyword | semantic | hybrid | rerank (default: hybrid with RRF)
+    ├─ HyDEGenerator (hypothetical document embeddings)
+    ├─ SemanticCache (similarity-based query caching)
+    ├─ QueryRouter (intelligent mode selection)
+    ├─ ParentContextEnricher (document context)
+    └─ Mode: keyword | semantic | hybrid | rerank | hyde | auto
     ↓
 MCP Server (HTTP/SSE or STDIO)
     ↓
@@ -181,26 +185,59 @@ Return Results (150-200ms latency)
 - Automatic reranking pipeline when enabled
 - Returns documents ranked by rerank scores
 
-**backend/core/hybrid_search.py** (Enhanced v2.0.3)
-- `HybridSearchEngine` - Hybrid search with RRF fusion
-- Four modes: keyword, semantic, hybrid, **rerank** (Phase 2.5)
+**backend/core/hybrid_search.py** (Enhanced v2.1.0)
+- `HybridSearchEngine` - Hybrid search with RRF fusion and advanced RAG
+- Six modes: keyword, semantic, hybrid, rerank, **hyde**, **auto** (Phase 3)
 - **RRF (Reciprocal Rank Fusion)**: score = 1/(k + rank)
-- **NEW Rerank Mode**: Two-stage search with semantic + keyword filtering
-  - `_rerank_search()` - Semantic retrieval followed by keyword refinement
-  - `_calculate_keyword_score()` - Keyword relevance scoring
-  - Configurable candidates (default: 50) and threshold (default: 0.1)
-- Better than weighted average for rank combination
+- **Rerank Mode**: Two-stage search with semantic + keyword filtering
+- **NEW HyDE Mode**: Hypothetical Document Embeddings for conceptual queries
+- **NEW Auto Mode**: Intelligent query routing to optimal search mode
+- **NEW**: Integrated semantic cache, query router, parent context enricher
 - Configurable fusion strategy (RRF vs weighted)
 
-**backend/mcp_server/tools.py** (Enhanced v2.0.3)
-- Defines 5 MCP tools exposed to LLMs
+**backend/core/hyde.py** (NEW in v2.1.0)
+- `HyDEGenerator` - Generate hypothetical documents for improved retrieval
+- Template-based expansion for documentation queries (how-to, API, troubleshooting, etc.)
+- `generate_hypothetical_document()` - Creates answer-like content from query
+- `generate_hyde_embedding()` - Combined query + hypothetical embedding (40/60 weight)
+- Bridges semantic gap between short queries and document content
+- Impact: Better retrieval for conceptual/vague queries
+
+**backend/core/semantic_cache.py** (NEW in v2.1.0)
+- `SemanticQueryCache` - LRU cache with semantic similarity matching
+- Finds cached results for paraphrased queries (e.g., "how to search" ~ "searching docs")
+- Configurable similarity threshold (default: 0.92 cosine similarity)
+- TTL-based expiration (default: 300 seconds)
+- Stats tracking: exact hits, semantic hits, miss rate
+- Impact: 5x speedup for similar queries, reduced API costs
+
+**backend/core/query_router.py** (NEW in v2.1.0)
+- `QueryRouter` - Intelligent search mode selection based on query analysis
+- Analyzes: word count, technical terms, question patterns, conceptual indicators
+- Query types: factual, conceptual, troubleshooting, navigational
+- Complexity scoring (0-1 scale)
+- Routes simple queries to keyword, complex conceptual queries to HyDE
+- `AdaptiveRouter` - Extends with feedback-based learning (future)
+
+**backend/core/parent_context.py** (NEW in v2.1.0)
+- `ParentContextEnricher` - Adds parent document context to search results
+- Extracts: document title, summary, headings outline, breadcrumb navigation
+- `ContextualSnippetGenerator` - Generates contextual snippets with surrounding text
+- Sibling chunks: shows adjacent chunk content for context continuity
+- Impact: LLMs get better context without extra get_document calls
+
+**backend/mcp_server/tools.py** (Enhanced v2.1.0)
+- Defines 7 MCP tools exposed to LLMs
 - Uses FastMCP decorators for tool registration
-- Tools: search_documentation, get_document, list_products, list_components, get_index_status
-- **NEW**: Enhanced `search_documentation()` with metadata filters:
+- Tools: search_documentation, get_document, list_products, list_components, get_index_status, **analyze_query**, **clear_search_cache**
+- Enhanced `search_documentation()` with:
+  - `mode` - Search mode selection (keyword, semantic, hybrid, rerank, hyde, auto)
+  - `include_parent_context` - Include parent document context in results
   - `doc_type` - Filter by document type (api, guide, architecture, reference, readme, documentation)
   - `tags` - Filter by tags extracted from YAML frontmatter
   - `modified_after` / `modified_before` - Temporal filtering with ISO 8601 dates
-- **NEW**: `_apply_metadata_filters()` - Post-search metadata filtering helper
+- **NEW**: `analyze_query()` - Analyze query characteristics and get mode recommendation
+- **NEW**: `clear_search_cache()` - Clear semantic query cache
 - Works transparently with all search modes
 
 **backend/main.py**
@@ -262,18 +299,19 @@ python /path/to/backend/stdio_server.py
 
 ### Available MCP Tools
 
-1. **search_documentation** - Search with filters (product, component, file_types, **doc_type, tags, modified_after, modified_before**)
-   - Uses configured search mode (keyword, semantic, hybrid, or rerank)
-   - Returns documents with relevance scores
-   - **NEW in v2.0.3**: Metadata filters
-     - `doc_type`: Filter by document type (api, guide, architecture, reference, readme, documentation)
-     - `tags`: Filter by tags from YAML frontmatter (OR logic - at least one must match)
-     - `modified_after`: ISO 8601 date - only docs modified after this date
-     - `modified_before`: ISO 8601 date - only docs modified before this date
+1. **search_documentation** - Search with filters and advanced RAG modes
+   - `mode`: Search mode (keyword, semantic, hybrid, rerank, hyde, auto)
+   - `include_parent_context`: Include parent document context in results
+   - `doc_type`: Filter by document type (api, guide, architecture, reference, readme, documentation)
+   - `tags`: Filter by tags from YAML frontmatter (OR logic - at least one must match)
+   - `modified_after`: ISO 8601 date - only docs modified after this date
+   - `modified_before`: ISO 8601 date - only docs modified before this date
 2. **get_document** - Retrieve full content, optionally extract section by heading
 3. **list_products** - List all products with component counts
 4. **list_components** - List components for specific product with doc counts
-5. **get_index_status** - Index statistics and health check (includes RAG status)
+5. **get_index_status** - Index statistics, RAG status, and enhanced features status
+6. **analyze_query** - Analyze query characteristics and get recommended search mode
+7. **clear_search_cache** - Clear semantic query cache for fresh results
 
 ## Configuration
 
@@ -359,6 +397,22 @@ ENABLE_EMBEDDINGS=true     # Enable/disable RAG functionality
 - Filters out semantically similar but contextually irrelevant documents
 - Combined score: 70% semantic + 30% keyword
 - Configurable `rerank_candidates` and `rerank_keyword_threshold`
+
+**HyDE Mode** (`SEARCH_MODE=hyde`, Phase 3):
+- Hypothetical Document Embeddings for conceptual queries
+- Generates a hypothetical answer document, then searches for similar content
+- Bridges semantic gap between short queries and long documents
+- Best for vague conceptual queries like "how do I configure authentication?"
+- Combined embedding: 40% query + 60% hypothetical document
+
+**Auto Mode** (`SEARCH_MODE=auto`, Phase 3):
+- Intelligent query routing based on query analysis
+- Analyzes query characteristics: word count, technical terms, question patterns
+- Routes to optimal mode automatically:
+  - Short technical queries → keyword
+  - Conceptual questions → HyDE
+  - Mixed queries → hybrid
+- Includes complexity scoring and confidence levels
 
 ## Critical Implementation Details
 

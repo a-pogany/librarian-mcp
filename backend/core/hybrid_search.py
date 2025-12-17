@@ -1,5 +1,11 @@
 """
 Hybrid search engine combining keyword and semantic search
+
+Enhanced with:
+- HyDE (Hypothetical Document Embeddings) for conceptual queries
+- Semantic query caching for paraphrased queries
+- Intelligent query routing based on query analysis
+- Parent document context enrichment
 """
 
 import logging
@@ -15,11 +21,17 @@ class HybridSearchEngine:
     """
     Hybrid search combining keyword and semantic search
 
-    Supports four modes:
+    Supports five modes:
     - keyword: Pure keyword search
     - semantic: Pure vector similarity search
     - hybrid: Combined search with configurable weighting (RRF or weighted average)
     - rerank: Two-stage search (semantic candidates + keyword filtering)
+    - hyde: Hypothetical Document Embeddings for conceptual queries
+
+    Enhanced features:
+    - Semantic query caching (finds similar queries)
+    - Intelligent query routing (auto-selects optimal mode)
+    - Parent document context enrichment
     """
 
     def __init__(
@@ -30,7 +42,13 @@ class HybridSearchEngine:
         semantic_weight: float = 0.5,
         use_rrf: bool = True,
         rerank_candidates: int = 50,
-        rerank_keyword_threshold: float = 0.1
+        rerank_keyword_threshold: float = 0.1,
+        enable_hyde: bool = True,
+        enable_semantic_cache: bool = True,
+        enable_query_routing: bool = True,
+        enable_parent_context: bool = True,
+        cache_ttl: int = 300,
+        cache_similarity_threshold: float = 0.92
     ):
         """
         Initialize hybrid search engine
@@ -38,11 +56,17 @@ class HybridSearchEngine:
         Args:
             keyword_engine: Keyword search engine
             semantic_engine: Semantic search engine (optional for keyword-only mode)
-            default_mode: Default search mode (keyword, semantic, hybrid, or rerank)
+            default_mode: Default search mode (keyword, semantic, hybrid, rerank, or hyde)
             semantic_weight: Weight for semantic scores in hybrid mode (0-1)
             use_rrf: Use Reciprocal Rank Fusion instead of weighted average
             rerank_candidates: Number of candidates for reranking mode
             rerank_keyword_threshold: Minimum keyword score threshold for reranking
+            enable_hyde: Enable HyDE search mode
+            enable_semantic_cache: Enable semantic query caching
+            enable_query_routing: Enable automatic query routing
+            enable_parent_context: Enable parent document context enrichment
+            cache_ttl: Cache time-to-live in seconds
+            cache_similarity_threshold: Minimum similarity for semantic cache hit
         """
         self.keyword_engine = keyword_engine
         self.semantic_engine = semantic_engine
@@ -51,16 +75,73 @@ class HybridSearchEngine:
         self.use_rrf = use_rrf
         self.rerank_candidates = rerank_candidates
         self.rerank_keyword_threshold = rerank_keyword_threshold
+        self.enable_hyde = enable_hyde
+        self.enable_semantic_cache = enable_semantic_cache
+        self.enable_query_routing = enable_query_routing
+        self.enable_parent_context = enable_parent_context
 
         # Validate mode
-        if default_mode not in ['keyword', 'semantic', 'hybrid', 'rerank']:
-            logger.warning(f"Invalid mode '{default_mode}', defaulting to 'keyword'")
-            self.default_mode = 'keyword'
+        valid_modes = ['keyword', 'semantic', 'hybrid', 'rerank', 'hyde', 'auto']
+        if default_mode not in valid_modes:
+            logger.warning(f"Invalid mode '{default_mode}', defaulting to 'hybrid'")
+            self.default_mode = 'hybrid'
 
         # Validate semantic mode availability
-        if default_mode in ['semantic', 'hybrid', 'rerank'] and not semantic_engine:
+        if default_mode in ['semantic', 'hybrid', 'rerank', 'hyde'] and not semantic_engine:
             logger.warning(f"Semantic engine not available, falling back to keyword mode")
             self.default_mode = 'keyword'
+
+        # Initialize HyDE generator
+        self.hyde_generator = None
+        if enable_hyde and semantic_engine:
+            try:
+                from .hyde import HyDEGenerator
+                self.hyde_generator = HyDEGenerator(
+                    embedding_generator=semantic_engine.embedding_generator
+                )
+                logger.info("HyDE generator initialized")
+            except ImportError as e:
+                logger.warning(f"Failed to initialize HyDE: {e}")
+
+        # Initialize semantic cache
+        self.semantic_cache = None
+        if enable_semantic_cache and semantic_engine:
+            try:
+                from .semantic_cache import SemanticQueryCache
+                self.semantic_cache = SemanticQueryCache(
+                    embedding_generator=semantic_engine.embedding_generator,
+                    max_size=1000,
+                    ttl_seconds=cache_ttl,
+                    similarity_threshold=cache_similarity_threshold
+                )
+                logger.info("Semantic query cache initialized")
+            except ImportError as e:
+                logger.warning(f"Failed to initialize semantic cache: {e}")
+
+        # Initialize query router
+        self.query_router = None
+        if enable_query_routing:
+            try:
+                from .query_router import QueryRouter
+                self.query_router = QueryRouter(
+                    default_mode=default_mode if default_mode != 'auto' else 'hybrid',
+                    enable_hyde=enable_hyde and self.hyde_generator is not None
+                )
+                logger.info("Query router initialized")
+            except ImportError as e:
+                logger.warning(f"Failed to initialize query router: {e}")
+
+        # Initialize parent context enricher
+        self.parent_context_enricher = None
+        if enable_parent_context and hasattr(semantic_engine, 'indexer'):
+            try:
+                from .parent_context import ParentContextEnricher
+                self.parent_context_enricher = ParentContextEnricher(
+                    indexer=semantic_engine.indexer
+                )
+                logger.info("Parent context enricher initialized")
+            except ImportError as e:
+                logger.warning(f"Failed to initialize parent context enricher: {e}")
 
         fusion_method = "RRF" if use_rrf else "weighted average"
         logger.info(f"Initialized HybridSearchEngine in '{self.default_mode}' mode ({fusion_method})")
@@ -72,7 +153,9 @@ class HybridSearchEngine:
         component: Optional[str] = None,
         file_types: Optional[List[str]] = None,
         max_results: int = 10,
-        mode: Optional[str] = None
+        mode: Optional[str] = None,
+        include_parent_context: Optional[bool] = None,
+        use_cache: bool = True
     ) -> List[Dict[str, Any]]:
         """
         Search documents using configured mode
@@ -83,26 +166,81 @@ class HybridSearchEngine:
             component: Filter by component
             file_types: Filter by file extensions
             max_results: Maximum results to return
-            mode: Override default mode (keyword, semantic, or hybrid)
+            mode: Override default mode (keyword, semantic, hybrid, rerank, hyde, auto)
+            include_parent_context: Override parent context setting
+            use_cache: Whether to use semantic cache
 
         Returns:
             List of matching documents with relevance scores
         """
-        # Use provided mode or default
+        # Build filter dict for cache key
+        filters = {}
+        if product:
+            filters['product'] = product
+        if component:
+            filters['component'] = component
+        if file_types:
+            filters['file_types'] = file_types
+
+        # Determine search mode
         search_mode = mode or self.default_mode
+
+        # Use query router for 'auto' mode or when enabled
+        if search_mode == 'auto' and self.query_router:
+            search_mode = self.query_router.route(query)
+            logger.debug(f"Query router selected mode: {search_mode}")
+
+        # Check semantic cache first
+        if use_cache and self.semantic_cache and search_mode != 'keyword':
+            cached_results = self.semantic_cache.get(query, search_mode, filters)
+            if cached_results:
+                logger.debug(f"Cache hit for query: {query[:50]}...")
+                # Still apply parent context if needed (cached results may not have it)
+                if self._should_include_parent_context(include_parent_context):
+                    cached_results = self._enrich_with_parent_context(cached_results)
+                return cached_results[:max_results]
 
         # Route to appropriate search method
         if search_mode == 'keyword':
-            return self._keyword_search(query, product, component, file_types, max_results)
+            results = self._keyword_search(query, product, component, file_types, max_results)
         elif search_mode == 'semantic':
-            return self._semantic_search(query, product, component, file_types, max_results)
+            results = self._semantic_search(query, product, component, file_types, max_results)
         elif search_mode == 'hybrid':
-            return self._hybrid_search(query, product, component, file_types, max_results)
+            results = self._hybrid_search(query, product, component, file_types, max_results)
         elif search_mode == 'rerank':
-            return self._rerank_search(query, product, component, file_types, max_results)
+            results = self._rerank_search(query, product, component, file_types, max_results)
+        elif search_mode == 'hyde':
+            results = self._hyde_search(query, product, component, file_types, max_results)
         else:
-            logger.warning(f"Unknown mode '{search_mode}', using keyword search")
-            return self._keyword_search(query, product, component, file_types, max_results)
+            logger.warning(f"Unknown mode '{search_mode}', using hybrid search")
+            results = self._hybrid_search(query, product, component, file_types, max_results)
+
+        # Cache results
+        if use_cache and self.semantic_cache and search_mode != 'keyword' and results:
+            self.semantic_cache.set(query, results, search_mode, filters)
+
+        # Enrich with parent context
+        if self._should_include_parent_context(include_parent_context):
+            results = self._enrich_with_parent_context(results)
+
+        return results
+
+    def _should_include_parent_context(self, override: Optional[bool]) -> bool:
+        """Determine whether to include parent context"""
+        if override is not None:
+            return override
+        return self.enable_parent_context and self.parent_context_enricher is not None
+
+    def _enrich_with_parent_context(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Add parent document context to results"""
+        if not self.parent_context_enricher:
+            return results
+
+        try:
+            return self.parent_context_enricher.enrich_results(results)
+        except Exception as e:
+            logger.warning(f"Failed to enrich with parent context: {e}")
+            return results
 
     def _keyword_search(
         self,
@@ -378,6 +516,110 @@ class HybridSearchEngine:
         # Return top N results
         return reranked[:max_results]
 
+    def _hyde_search(
+        self,
+        query: str,
+        product: Optional[str],
+        component: Optional[str],
+        file_types: Optional[List[str]],
+        max_results: int
+    ) -> List[Dict[str, Any]]:
+        """
+        HyDE (Hypothetical Document Embeddings) search:
+
+        1. Generate a hypothetical document that would answer the query
+        2. Use the hypothetical document's embedding to find similar documents
+        3. Return documents similar to the hypothetical answer
+
+        This bridges the semantic gap between short queries and document content.
+        """
+        if not self.hyde_generator or not self.semantic_engine:
+            logger.warning("HyDE not available, falling back to semantic search")
+            return self._semantic_search(query, product, component, file_types, max_results)
+
+        logger.debug(f"Executing HyDE search: {query}")
+
+        try:
+            # Generate HyDE embedding (combines query with hypothetical document)
+            hyde_embedding = self.hyde_generator.generate_hyde_embedding(query)
+
+            # Build metadata filter
+            where_filter = {}
+            if product:
+                where_filter['product'] = product
+            if component:
+                where_filter['component'] = component
+            if file_types:
+                where_filter['file_type'] = {"$in": file_types}
+
+            # Search vector database with HyDE embedding
+            vector_results = self.semantic_engine.vector_db.search(
+                query_embedding=hyde_embedding,
+                n_results=max_results * 2,  # Get more candidates
+                where=where_filter if where_filter else None
+            )
+
+            # Enrich results with document metadata
+            enriched_results = []
+            for result in vector_results:
+                doc_id = result['id']
+                doc = self.semantic_engine.indexer.index.documents.get(doc_id)
+
+                if doc:
+                    snippet = self._extract_snippet(doc['content'], query)
+
+                    enriched_results.append({
+                        'id': doc_id,
+                        'file_path': doc_id,
+                        'product': doc['product'],
+                        'component': doc['component'],
+                        'file_name': doc['file_name'],
+                        'file_type': doc['file_type'],
+                        'snippet': snippet,
+                        'relevance_score': round(result['similarity'], 2),
+                        'similarity_score': round(result['similarity'], 2),
+                        'search_mode': 'hyde',
+                        'last_modified': doc['last_modified']
+                    })
+
+            logger.debug(f"HyDE search returned {len(enriched_results)} results")
+            return enriched_results[:max_results]
+
+        except Exception as e:
+            logger.error(f"HyDE search failed: {e}, falling back to semantic")
+            return self._semantic_search(query, product, component, file_types, max_results)
+
+    def _extract_snippet(self, content: str, query: str, max_length: int = 200) -> str:
+        """Extract relevant snippet from content"""
+        lines = content.split('\n')
+        query_lower = query.lower()
+        query_words = query_lower.split()
+
+        # Find line most similar to query
+        best_line = ""
+        max_matches = 0
+
+        for line in lines:
+            line_lower = line.lower()
+            matches = sum(1 for word in query_words if word in line_lower)
+
+            if matches > max_matches:
+                max_matches = matches
+                best_line = line
+
+        # If no matches, return first non-empty line
+        if not best_line:
+            for line in lines:
+                if line.strip():
+                    best_line = line
+                    break
+
+        snippet = best_line.strip()
+        if len(snippet) > max_length:
+            snippet = snippet[:max_length] + "..."
+
+        return snippet
+
     def _calculate_keyword_score(
         self,
         keywords: List[str],
@@ -440,13 +682,17 @@ class HybridSearchEngine:
         Set default search mode
 
         Args:
-            mode: Search mode (keyword, semantic, hybrid, or rerank)
+            mode: Search mode (keyword, semantic, hybrid, rerank, hyde, or auto)
         """
-        if mode not in ['keyword', 'semantic', 'hybrid', 'rerank']:
-            raise ValueError(f"Invalid mode: {mode}")
+        valid_modes = ['keyword', 'semantic', 'hybrid', 'rerank', 'hyde', 'auto']
+        if mode not in valid_modes:
+            raise ValueError(f"Invalid mode: {mode}. Must be one of: {valid_modes}")
 
         if mode in ['semantic', 'hybrid', 'rerank'] and not self.semantic_engine:
             raise ValueError(f"Cannot set mode to '{mode}': semantic engine not available")
+
+        if mode == 'hyde' and not self.hyde_generator:
+            raise ValueError("Cannot set mode to 'hyde': HyDE generator not available")
 
         self.default_mode = mode
         logger.info(f"Search mode changed to: {mode}")
@@ -470,10 +716,53 @@ class HybridSearchEngine:
             'default_mode': self.default_mode,
             'semantic_weight': self.semantic_weight,
             'keyword_engine': 'available',
-            'semantic_engine': 'available' if self.semantic_engine else 'not available'
+            'semantic_engine': 'available' if self.semantic_engine else 'not available',
+            'enhanced_features': {
+                'hyde': 'available' if self.hyde_generator else 'not available',
+                'semantic_cache': 'available' if self.semantic_cache else 'not available',
+                'query_routing': 'available' if self.query_router else 'not available',
+                'parent_context': 'available' if self.parent_context_enricher else 'not available'
+            }
         }
 
         if self.semantic_engine:
             stats['semantic_stats'] = self.semantic_engine.get_stats()
 
+        if self.semantic_cache:
+            stats['cache_stats'] = self.semantic_cache.get_stats()
+
         return stats
+
+    def clear_cache(self):
+        """Clear the semantic query cache"""
+        if self.semantic_cache:
+            self.semantic_cache.clear()
+            logger.info("Query cache cleared")
+
+    def analyze_query(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze a query and return routing information
+
+        Args:
+            query: Search query to analyze
+
+        Returns:
+            Query analysis with recommended mode
+        """
+        if not self.query_router:
+            return {'error': 'Query router not available'}
+
+        analysis = self.query_router.analyze(query)
+        return {
+            'query': analysis.query,
+            'word_count': analysis.word_count,
+            'has_exact_terms': analysis.has_exact_terms,
+            'has_technical_terms': analysis.has_technical_terms,
+            'is_question': analysis.is_question,
+            'is_conceptual': analysis.is_conceptual,
+            'query_type': analysis.query_type,
+            'complexity_score': round(analysis.complexity_score, 2),
+            'recommended_mode': analysis.recommended_mode.value,
+            'confidence': round(analysis.confidence, 2),
+            'reasoning': analysis.reasoning
+        }
