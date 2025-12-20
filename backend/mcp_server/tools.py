@@ -24,10 +24,12 @@ def search_documentation(
     tags: Optional[List[str]] = None,
     modified_after: Optional[str] = None,
     modified_before: Optional[str] = None,
-    max_results: int = 10
+    max_results: int = 10,
+    mode: Optional[str] = None,
+    include_parent_context: Optional[bool] = None
 ) -> dict:
     """
-    Search across all documentation with enhanced filtering.
+    Search across all documentation with enhanced filtering and advanced RAG modes.
 
     Args:
         query: Search keywords (space-separated)
@@ -39,18 +41,19 @@ def search_documentation(
         modified_after: Only docs modified after this date (ISO format: 2024-01-01)
         modified_before: Only docs modified before this date (ISO format: 2024-12-31)
         max_results: Maximum number of results (default: 10, max: 50)
+        mode: Search mode - keyword, semantic, hybrid, rerank, hyde, or auto (auto selects best mode)
+        include_parent_context: Include parent document context (title, summary, headings)
 
     Returns:
         Dictionary with search results including file paths, snippets,
-        relevance scores, and metadata
+        relevance scores, metadata, and optionally parent context
 
     Example:
         search_documentation(
-            query="authentication OAuth",
+            query="how to configure authentication",
             product="symphony",
-            doc_type="api",
-            tags=["security"],
-            modified_after="2024-01-01",
+            mode="hyde",  # Use HyDE for conceptual queries
+            include_parent_context=True,
             max_results=5
         )
     """
@@ -60,7 +63,9 @@ def search_documentation(
             product=product,
             component=component,
             file_types=file_types,
-            max_results=min(max_results, 50) * 2  # Get more for filtering
+            max_results=min(max_results, 50) * 2,  # Get more for filtering
+            mode=mode,
+            include_parent_context=include_parent_context
         )
 
         # Apply enhanced metadata filters
@@ -72,10 +77,16 @@ def search_documentation(
             modified_before=modified_before
         )
 
+        # Determine the actual mode used
+        actual_mode = mode or search_engine.get_mode()
+        if mode == 'auto' and hasattr(search_engine, 'query_router') and search_engine.query_router:
+            actual_mode = search_engine.query_router.route(query)
+
         return {
             "results": filtered_results[:max_results],
             "total": len(filtered_results),
             "query": query,
+            "search_mode": actual_mode,
             "filters": {
                 "product": product,
                 "component": component,
@@ -140,6 +151,220 @@ def _apply_metadata_filters(
         filtered.append(result)
 
     return filtered
+
+
+@mcp.tool()
+def search_emails(
+    query: str,
+    sender: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    subject_contains: Optional[str] = None,
+    has_attachments: Optional[bool] = None,
+    date_after: Optional[str] = None,
+    date_before: Optional[str] = None,
+    max_results: int = 10,
+    mode: Optional[str] = None,
+    include_parent_context: Optional[bool] = None
+) -> dict:
+    """
+    Search emails with email-specific filters.
+
+    This tool is optimized for searching EML files with preprocessing
+    (quote removal, signature removal, thread grouping).
+
+    Args:
+        query: Search keywords (space-separated)
+        sender: Filter by sender email address (partial match)
+        thread_id: Filter by email thread ID (groups related emails)
+        subject_contains: Filter by subject line (partial match)
+        has_attachments: Filter emails with/without attachments
+        date_after: Only emails after this date (ISO format: 2024-01-01)
+        date_before: Only emails before this date (ISO format: 2024-12-31)
+        max_results: Maximum number of results (default: 10, max: 50)
+        mode: Search mode - keyword, semantic, hybrid, rerank, hyde, or auto
+        include_parent_context: Include parent document context
+
+    Returns:
+        Dictionary with email search results including:
+        - from, to, cc, subject, date
+        - thread_id for grouping related emails
+        - attachment metadata
+        - cleaned content (quotes and signature removed)
+
+    Example:
+        search_emails(
+            query="project deadline",
+            sender="john@example.com",
+            has_attachments=True,
+            date_after="2024-01-01",
+            max_results=10
+        )
+    """
+    try:
+        # Search only .eml files
+        results = search_engine.search(
+            query=query,
+            file_types=['.eml'],
+            max_results=min(max_results, 50) * 2,  # Get more for filtering
+            mode=mode,
+            include_parent_context=include_parent_context
+        )
+
+        # Apply email-specific filters
+        filtered_results = _apply_email_filters(
+            results,
+            sender=sender,
+            thread_id=thread_id,
+            subject_contains=subject_contains,
+            has_attachments=has_attachments,
+            date_after=date_after,
+            date_before=date_before
+        )
+
+        # Determine the actual mode used
+        actual_mode = mode or search_engine.get_mode()
+        if mode == 'auto' and hasattr(search_engine, 'query_router') and search_engine.query_router:
+            actual_mode = search_engine.query_router.route(query)
+
+        return {
+            "results": filtered_results[:max_results],
+            "total": len(filtered_results),
+            "query": query,
+            "search_mode": actual_mode,
+            "filters": {
+                "sender": sender,
+                "thread_id": thread_id,
+                "subject_contains": subject_contains,
+                "has_attachments": has_attachments,
+                "date_after": date_after,
+                "date_before": date_before
+            }
+        }
+    except Exception as e:
+        logger.error(f"Email search error: {e}")
+        return {
+            "error": "Email search failed",
+            "detail": str(e)
+        }
+
+
+def _apply_email_filters(
+    results: List[dict],
+    sender: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    subject_contains: Optional[str] = None,
+    has_attachments: Optional[bool] = None,
+    date_after: Optional[str] = None,
+    date_before: Optional[str] = None
+) -> List[dict]:
+    """Apply email-specific filters to search results"""
+    from datetime import datetime
+
+    filtered = []
+
+    for result in results:
+        metadata = result.get('metadata', {})
+
+        # Sender filter (partial match)
+        if sender:
+            result_sender = metadata.get('from', '')
+            if sender.lower() not in result_sender.lower():
+                continue
+
+        # Thread ID filter
+        if thread_id:
+            result_thread = metadata.get('thread_id', '')
+            if thread_id != result_thread:
+                continue
+
+        # Subject filter (partial match)
+        if subject_contains:
+            result_subject = metadata.get('subject', '')
+            if subject_contains.lower() not in result_subject.lower():
+                continue
+
+        # Attachments filter
+        if has_attachments is not None:
+            result_has_attachments = metadata.get('has_attachments', False)
+            if has_attachments != result_has_attachments:
+                continue
+
+        # Date filters
+        date_str = metadata.get('date_iso') or metadata.get('date')
+        if date_str:
+            try:
+                # Handle both ISO format and email date format
+                if 'T' in str(date_str):
+                    email_dt = datetime.fromisoformat(str(date_str).replace('Z', '+00:00'))
+                else:
+                    from email.utils import parsedate_to_datetime
+                    email_dt = parsedate_to_datetime(str(date_str))
+
+                if date_after:
+                    after_dt = datetime.fromisoformat(date_after)
+                    if email_dt.replace(tzinfo=None) < after_dt:
+                        continue
+
+                if date_before:
+                    before_dt = datetime.fromisoformat(date_before)
+                    if email_dt.replace(tzinfo=None) >= before_dt:
+                        continue
+
+            except (ValueError, TypeError) as e:
+                logger.debug(f"Error parsing email date: {e}")
+
+        filtered.append(result)
+
+    return filtered
+
+
+@mcp.tool()
+def get_email_thread(thread_id: str, max_results: int = 50) -> dict:
+    """
+    Get all emails in a thread, ordered by date.
+
+    Args:
+        thread_id: Thread ID to retrieve (from search_emails results)
+        max_results: Maximum emails to return (default: 50)
+
+    Returns:
+        List of emails in the thread, chronologically ordered
+
+    Example:
+        get_email_thread(thread_id="<original-message-id@example.com>")
+    """
+    try:
+        # Search for all emails with this thread ID
+        results = search_engine.search(
+            query="*",  # Match all
+            file_types=['.eml'],
+            max_results=max_results * 2
+        )
+
+        # Filter by thread ID
+        thread_emails = []
+        for result in results:
+            metadata = result.get('metadata', {})
+            if metadata.get('thread_id') == thread_id:
+                thread_emails.append(result)
+
+        # Sort by date
+        thread_emails.sort(
+            key=lambda x: x.get('metadata', {}).get('date_iso', ''),
+            reverse=False  # Oldest first
+        )
+
+        return {
+            "thread_id": thread_id,
+            "emails": thread_emails[:max_results],
+            "total": len(thread_emails)
+        }
+    except Exception as e:
+        logger.error(f"Get email thread error: {e}")
+        return {
+            "error": "Failed to retrieve email thread",
+            "detail": str(e)
+        }
 
 
 @mcp.tool()
@@ -246,21 +471,100 @@ def list_components(product: str) -> dict:
 @mcp.tool()
 def get_index_status() -> dict:
     """
-    Get current indexing status and statistics.
+    Get current indexing status, statistics, and advanced RAG capabilities.
 
     Returns:
-        Index status, file counts, and last update time
+        Index status, file counts, last update time, and enhanced features status
 
     Example:
         get_index_status()
     """
     try:
         status = indexer.get_status()
+
+        # Add search engine stats including enhanced features
+        if search_engine:
+            search_stats = search_engine.get_stats()
+            status['search_engine'] = search_stats
+
         return status
     except Exception as e:
         logger.error(f"Get status error: {e}")
         return {
             "error": "Failed to get status",
+            "detail": str(e)
+        }
+
+
+@mcp.tool()
+def analyze_query(query: str) -> dict:
+    """
+    Analyze a query to understand its characteristics and recommended search mode.
+
+    This tool helps understand how the search system interprets queries and
+    which search mode would be most effective.
+
+    Args:
+        query: The search query to analyze
+
+    Returns:
+        Query analysis including:
+        - word_count: Number of words in query
+        - query_type: Type of query (factual, conceptual, troubleshooting, navigational)
+        - complexity_score: How complex the query is (0-1)
+        - recommended_mode: Best search mode for this query
+        - reasoning: Explanation of the recommendation
+
+    Example:
+        analyze_query(query="how to configure OAuth authentication")
+    """
+    try:
+        if hasattr(search_engine, 'analyze_query'):
+            analysis = search_engine.analyze_query(query)
+            return analysis
+        else:
+            return {
+                "error": "Query analysis not available",
+                "detail": "Query router is not enabled"
+            }
+    except Exception as e:
+        logger.error(f"Query analysis error: {e}")
+        return {
+            "error": "Failed to analyze query",
+            "detail": str(e)
+        }
+
+
+@mcp.tool()
+def clear_search_cache() -> dict:
+    """
+    Clear the semantic query cache.
+
+    Use this if you need to force fresh search results or after
+    making significant changes to the documentation.
+
+    Returns:
+        Confirmation of cache clear
+
+    Example:
+        clear_search_cache()
+    """
+    try:
+        if hasattr(search_engine, 'clear_cache'):
+            search_engine.clear_cache()
+            return {
+                "success": True,
+                "message": "Search cache cleared successfully"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Cache not available"
+            }
+    except Exception as e:
+        logger.error(f"Clear cache error: {e}")
+        return {
+            "error": "Failed to clear cache",
             "detail": str(e)
         }
 
