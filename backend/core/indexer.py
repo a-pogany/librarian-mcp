@@ -387,38 +387,87 @@ class FileIndexer:
 
         return len(folder_paths)
 
-    def build_index(self) -> Dict:
-        """Build complete index of all documents"""
+    def build_index(self, force_reindex: bool = False) -> Dict:
+        """Build complete index of all documents
+        
+        Args:
+            force_reindex: If True, rebuild vector embeddings even if they exist.
+                          If False (default), reuse existing embeddings from persistent storage.
+        """
         start_time = datetime.now()
         logger.info(f"Building index from: {self.docs_root}")
 
+        # Check if vector DB has existing data (persistence check)
+        existing_embeddings_count = 0
+        skip_embeddings = False
+        
+        if self.enable_embeddings and self.vector_db:
+            existing_embeddings_count = self.vector_db.get_count()
+            if existing_embeddings_count > 0 and not force_reindex:
+                logger.info(f"Found {existing_embeddings_count} existing embeddings in persistent storage")
+                logger.info("Skipping embedding regeneration (use force_reindex=True to rebuild)")
+                skip_embeddings = True
+
+        # First, collect all files to get total count
+        all_files = self._scan_files()
+        total_files = len(all_files)
+        logger.info(f"Found {total_files} files to index")
+
         file_count = 0
         error_count = 0
+        last_progress_log = 0
+        progress_interval = max(1, total_files // 20)  # Log every 5% or at least every file
 
-        # Scan all files
-        for file_path in self._scan_files():
+        # Process files with progress reporting
+        for file_path in all_files:
             try:
-                self.index_file(str(file_path))
+                self._index_file_internal(str(file_path), skip_embeddings=skip_embeddings)
                 file_count += 1
             except Exception as e:
                 logger.error(f"Error indexing {file_path}: {e}")
                 error_count += 1
+                file_count += 1  # Still count as processed
+
+            # Progress reporting
+            if file_count - last_progress_log >= progress_interval or file_count == total_files:
+                elapsed = (datetime.now() - start_time).total_seconds()
+                percent = (file_count / total_files * 100) if total_files > 0 else 100
+                rate = file_count / elapsed if elapsed > 0 else 0
+                remaining_files = total_files - file_count
+                eta_seconds = remaining_files / rate if rate > 0 else 0
+
+                if eta_seconds > 60:
+                    eta_str = f"{eta_seconds / 60:.1f} min"
+                else:
+                    eta_str = f"{eta_seconds:.0f} sec"
+
+                logger.info(f"Progress: {file_count}/{total_files} ({percent:.1f}%) - "
+                           f"{rate:.1f} files/sec - ETA: {eta_str}")
+                last_progress_log = file_count
 
         self.index.last_indexed = datetime.now()
         duration = (datetime.now() - start_time).total_seconds()
 
         logger.info(f"Index built: {file_count} files, {error_count} errors, {duration:.2f}s")
+        if skip_embeddings:
+            logger.info(f"Reused {existing_embeddings_count} existing embeddings from persistent storage")
 
         # Build folder metadata and embeddings if enabled
         folder_count = 0
-        if self.enable_folder_metadata:
+        if self.enable_folder_metadata and not skip_embeddings:
             try:
                 folder_count = self._build_folder_metadata()
             except Exception as e:
                 logger.error(f"Error building folder metadata: {e}")
+        elif self.enable_folder_metadata and skip_embeddings:
+            # Check for existing folder metadata
+            if self.folder_vector_db:
+                folder_count = self.folder_vector_db.get_count()
+                if folder_count > 0:
+                    logger.info(f"Reused {folder_count} existing folder embeddings")
 
         # Start file watcher if configured
-        if self.config.get('watch_for_changes', True):
+        if self.config.get('docs', {}).get('watch_for_changes', True):
             self.start_watching()
 
         return {
@@ -426,7 +475,9 @@ class FileIndexer:
             'files_indexed': file_count,
             'folders_indexed': folder_count,
             'errors': error_count,
-            'duration_seconds': round(duration, 2)
+            'duration_seconds': round(duration, 2),
+            'embeddings_reused': skip_embeddings,
+            'existing_embeddings': existing_embeddings_count
         }
 
     def _extract_frontmatter_tags(self, content: str) -> List[str]:
@@ -483,8 +534,13 @@ class FileIndexer:
 
         return 'documentation'  # default
 
-    def index_file(self, file_path: str):
-        """Index a single file"""
+    def _index_file_internal(self, file_path: str, skip_embeddings: bool = False):
+        """Index a single file with optional embedding generation control
+        
+        Args:
+            file_path: Path to the file to index
+            skip_embeddings: If True, skip generating embeddings (for persistence reuse)
+        """
         path = Path(file_path)
 
         # Check if file should be indexed
@@ -496,12 +552,19 @@ class FileIndexer:
 
         # Extract product and component from path
         parts = Path(rel_path).parts
-        if len(parts) < 2:
-            logger.warning(f"Invalid path structure: {rel_path}")
+        
+        if len(parts) == 0:
+            logger.warning(f"Empty path structure: {rel_path}")
             return
-
-        product = parts[0]
-        component = parts[1] if len(parts) > 1 else 'root'
+        elif len(parts) == 1:
+            product = self.docs_root.name
+            component = 'root'
+        elif len(parts) == 2:
+            product = parts[0]
+            component = 'root'
+        else:
+            product = parts[0]
+            component = parts[1]
 
         # Parse file content
         parser = self.parsers.get(path.suffix)
@@ -536,14 +599,14 @@ class FileIndexer:
             'tags': tags
         }
 
-        # Add to index
+        # Add to in-memory keyword index (always needed for keyword search)
         self.index.add_document(doc)
         logger.debug(f"Indexed: {rel_path}")
 
         # Generate and store embeddings with chunking if enabled (Phase 2)
-        if self.enable_embeddings and self.embedding_generator and self.vector_db:
+        # Skip if embeddings already exist in persistent storage
+        if not skip_embeddings and self.enable_embeddings and self.embedding_generator and self.vector_db:
             try:
-                # Pass enhanced metadata to embeddings
                 enhanced_metadata = {
                     'doc_type': doc_type,
                     'tags': tags,
@@ -562,10 +625,18 @@ class FileIndexer:
             except Exception as e:
                 logger.error(f"Error generating embeddings for {rel_path}: {e}")
 
+    def index_file(self, file_path: str):
+        """Index a single file (public method for file watcher and external calls)
+        
+        Note: This always generates embeddings for new/updated files.
+        For bulk indexing with persistence awareness, use build_index().
+        """
+        self._index_file_internal(file_path, skip_embeddings=False)
+
     def _scan_files(self) -> List[Path]:
         """Recursively scan for indexable files"""
-        extensions = self.config.get('file_extensions', ['.md', '.txt', '.docx'])
-        max_size = self.config.get('max_file_size_mb', 10) * 1024 * 1024
+        extensions = self.config.get('docs', {}).get('file_extensions', ['.md', '.txt', '.docx', '.eml'])
+        max_size = self.config.get('docs', {}).get('max_file_size_mb', 10) * 1024 * 1024
 
         files = []
         for ext in extensions:
@@ -577,8 +648,8 @@ class FileIndexer:
 
     def _should_index(self, path: Path) -> bool:
         """Check if file should be indexed"""
-        extensions = self.config.get('file_extensions', ['.md', '.txt', '.docx'])
-        max_size = self.config.get('max_file_size_mb', 10) * 1024 * 1024
+        extensions = self.config.get('docs', {}).get('file_extensions', ['.md', '.txt', '.docx', '.eml'])
+        max_size = self.config.get('docs', {}).get('max_file_size_mb', 10) * 1024 * 1024
 
         if path.suffix not in extensions:
             return False

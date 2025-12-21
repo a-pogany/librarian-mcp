@@ -99,15 +99,21 @@ class SemanticSearchEngine:
             enriched_results = []
             for result in filtered_results:
                 doc_id = result['id']
-                doc = self.indexer.index.documents.get(doc_id)
+                # Support chunked document IDs (e.g., 'path#chunk0') by using base doc id
+                base_doc_id = doc_id.split('#', 1)[0]
+                doc = self.indexer.index.documents.get(base_doc_id)
+
+                # Fallback: try full doc_id if base lookup failed
+                if not doc:
+                    doc = self.indexer.index.documents.get(doc_id)
 
                 if doc:
                     # Extract snippet from content
                     snippet = self._extract_snippet(doc['content'], query)
 
                     enriched_results.append({
-                        'id': doc_id,
-                        'file_path': doc_id,
+                        'id': base_doc_id,
+                        'file_path': base_doc_id,
                         'product': doc['product'],
                         'component': doc['component'],
                         'file_name': doc['file_name'],

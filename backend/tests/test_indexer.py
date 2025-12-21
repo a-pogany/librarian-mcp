@@ -81,3 +81,31 @@ def test_add_remove_document():
 
     index.remove_document('test/component/file.md')
     assert len(index.documents) == 0
+
+
+def test_build_index_returns_persistence_info(temp_docs):
+    """Test that build_index returns persistence information"""
+    indexer = FileIndexer(str(temp_docs), {'watch_for_changes': False})
+    result = indexer.build_index()
+
+    # Verify persistence-related fields are present in result
+    assert 'embeddings_reused' in result
+    assert 'existing_embeddings' in result
+
+    # Without embeddings enabled, these should be False/0
+    assert result['embeddings_reused'] == False
+    assert result['existing_embeddings'] == 0
+
+
+def test_build_index_with_force_reindex(temp_docs):
+    """Test that force_reindex parameter works correctly"""
+    indexer = FileIndexer(str(temp_docs), {'watch_for_changes': False})
+
+    # First build
+    result1 = indexer.build_index(force_reindex=False)
+    assert result1['status'] == 'complete'
+
+    # Second build should also work with force_reindex=True
+    result2 = indexer.build_index(force_reindex=True)
+    assert result2['status'] == 'complete'
+    assert result2['files_indexed'] == result1['files_indexed']

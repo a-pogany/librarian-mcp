@@ -33,8 +33,8 @@ def load_config(config_path: str = "config.json") -> Dict:
             config = json.load(f)
 
     # Override with environment variables
-    if os.getenv('DOCS_ROOT_PATH'):
-        config['docs']['root_path'] = os.getenv('DOCS_ROOT_PATH')
+    # Note: docs.root_path is configured in config.json only (no env override)
+    # This avoids confusion from dual configuration sources
 
     if os.getenv('MCP_HOST'):
         config['mcp']['host'] = os.getenv('MCP_HOST')

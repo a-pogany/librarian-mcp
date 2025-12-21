@@ -93,7 +93,7 @@ class HybridSearchEngine:
 
         # Initialize HyDE generator
         self.hyde_generator = None
-        if enable_hyde and semantic_engine:
+        if enable_hyde and semantic_engine and hasattr(semantic_engine, 'embedding_generator') and semantic_engine.embedding_generator:
             try:
                 from .hyde import HyDEGenerator
                 self.hyde_generator = HyDEGenerator(
@@ -102,10 +102,12 @@ class HybridSearchEngine:
                 logger.info("HyDE generator initialized")
             except ImportError as e:
                 logger.warning(f"Failed to initialize HyDE: {e}")
+        elif enable_hyde and semantic_engine:
+            logger.warning("HyDE requested but semantic engine has no embedding_generator; HyDE disabled")
 
         # Initialize semantic cache
         self.semantic_cache = None
-        if enable_semantic_cache and semantic_engine:
+        if enable_semantic_cache and semantic_engine and hasattr(semantic_engine, 'embedding_generator') and semantic_engine.embedding_generator:
             try:
                 from .semantic_cache import SemanticQueryCache
                 self.semantic_cache = SemanticQueryCache(
@@ -117,6 +119,8 @@ class HybridSearchEngine:
                 logger.info("Semantic query cache initialized")
             except ImportError as e:
                 logger.warning(f"Failed to initialize semantic cache: {e}")
+        elif enable_semantic_cache and semantic_engine:
+            logger.warning("Semantic cache requested but semantic engine has no embedding_generator; cache disabled")
 
         # Initialize query router
         self.query_router = None
