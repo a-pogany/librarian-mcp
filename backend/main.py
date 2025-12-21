@@ -61,9 +61,10 @@ async def startup_event():
     logger.info(f"Search mode: {search_mode}")
 
     try:
+        # Pass full config so FileIndexer can access embeddings, chunking, and folder_metadata sections
         indexer = FileIndexer(
             str(docs_path),
-            config['docs'],
+            config,
             enable_embeddings=enable_embeddings
         )
     except Exception as e:
@@ -72,7 +73,7 @@ async def startup_event():
         enable_embeddings = False
         indexer = FileIndexer(
             str(docs_path),
-            config['docs'],
+            config,
             enable_embeddings=False
         )
 

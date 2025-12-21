@@ -37,9 +37,10 @@ def main():
     logger.info("Search mode: %s", search_mode)
 
     try:
+        # Pass full config so FileIndexer can access embeddings, chunking, and folder_metadata sections
         indexer = FileIndexer(
             str(docs_path),
-            config["docs"],
+            config,
             enable_embeddings=enable_embeddings
         )
     except Exception as e:
@@ -48,7 +49,7 @@ def main():
         enable_embeddings = False
         indexer = FileIndexer(
             str(docs_path),
-            config["docs"],
+            config,
             enable_embeddings=False
         )
 
