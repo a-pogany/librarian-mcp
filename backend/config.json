@@ -4,7 +4,7 @@
     "version": "2.1.0"
   },
   "docs": {
-    "root_path": "/Volumes/Pogany Attila SG archiv/APY_archive/emails/archive_since_2023_eml/Sent Items",
+    "root_path": "/Volumes/Pogany Attila SG archiv/APY_archive/emails/archive_since_2023_eml",
     "file_extensions": [".md", ".txt", ".docx", ".eml"],
     "max_file_size_mb": 10,
     "watch_for_changes": true,
