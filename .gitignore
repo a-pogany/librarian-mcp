@@ -38,11 +38,21 @@ mcp_server.log
 
 # Environment
 .env
+.env.*
 
 # Test Coverage
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Node / Frontend
+node_modules/
+frontend/.next/
+frontend/ui-tests/test-results/
+frontend/ui-tests/playwright-report/
+
+# Local runtime artifacts
+scripts/.pids/
 
 # Documentation (user-specific files excluded, structure kept)
 docs/*

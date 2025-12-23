@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Librarian Search Console</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="aurora"></div>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">L</div>
+        <div>
+          <div class="brand-title">Librarian Search</div>
+          <div class="brand-subtitle">MCP SSE + Agent Layer</div>
+        </div>
+      </div>
+      <div class="topbar-controls">
+        <div class="theme-switcher">
+          <label for="themeSelect">Display</label>
+          <select id="themeSelect">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <div class="status">
+        <span class="status-dot" id="statusDot"></span>
+        <div>
+          <div class="status-label">MCP connection</div>
+          <div class="status-value" id="statusValue">Checking...</div>
+        </div>
+        <button class="ghost-button" id="statusRefresh">Refresh</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="search-panel">
+      <div class="search-inputs">
+        <input
+          id="searchInput"
+          type="text"
+          placeholder="Search documentation or email threads..."
+          autocomplete="off"
+        />
+        <select id="searchType">
+          <option value="documentation">Documentation</option>
+          <option value="emails">Emails</option>
+        </select>
+        <button id="searchButton">Search</button>
+      </div>
+      <div class="search-meta" id="searchMeta">Ready.</div>
+    </section>
+
+    <main class="results-layout">
+      <aside class="results-panel">
+        <div class="panel-header">
+          <h2>Findings</h2>
+          <div class="panel-actions">
+            <span id="resultsCount">0</span>
+            <button class="ghost-button" id="loadMoreButton">Load more</button>
+          </div>
+        </div>
+        <ul class="results-list" id="resultsList"></ul>
+      </aside>
+
+      <section class="detail-panel">
+        <div class="panel-header">
+          <h2>Detail</h2>
+          <span id="detailMeta">Select a result</span>
+        </div>
+        <div class="detail-body" id="detailBody">
+          <div class="empty-state">
+            <h3>No result selected</h3>
+            <p>Pick a finding on the left to view the full document or email content.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
