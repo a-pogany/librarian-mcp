@@ -1,0 +1,16 @@
+{
+  "name": "librarian-agent-layer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent layer bridging MCP SSE tools to a simple HTTP API",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2"
+  }
+}
