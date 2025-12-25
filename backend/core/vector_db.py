@@ -68,15 +68,21 @@ class VectorDatabase:
                 logger.info("Using in-memory storage")
 
             # Get or create collection with optimized HNSW parameters
-            self.collection = self.client.get_or_create_collection(
-                name=self.collection_name,
-                metadata={
-                    "hnsw:space": "cosine",
-                    "hnsw:construction_ef": 200,  # Better index quality
-                    "hnsw:search_ef": 100,        # Better search quality
-                    "hnsw:M": 16                   # Memory vs speed tradeoff
-                }
-            )
+            try:
+                self.collection = self.client.get_or_create_collection(
+                    name=self.collection_name,
+                    metadata={
+                        "hnsw:space": "cosine",
+                        "hnsw:construction_ef": 200,  # Better index quality
+                        "hnsw:search_ef": 100,        # Better search quality
+                        "hnsw:M": 16                   # Memory vs speed tradeoff
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Failed to apply HNSW metadata, retrying with defaults: {e}")
+                self.collection = self.client.get_or_create_collection(
+                    name=self.collection_name
+                )
 
             logger.info(f"Collection '{self.collection_name}' ready")
 

@@ -13,6 +13,7 @@ const statusDot = document.getElementById("statusDot");
 const statusValue = document.getElementById("statusValue");
 const statusRefresh = document.getElementById("statusRefresh");
 const searchType = document.getElementById("searchType");
+const searchMode = document.getElementById("searchMode");
 const themeSelect = document.getElementById("themeSelect");
 
 let currentResults = [];
@@ -20,9 +21,25 @@ let activeIndex = null;
 let systemThemeMedia = window.matchMedia("(prefers-color-scheme: dark)");
 let systemThemeListener = null;
 let lastQuery = "";
-let lastSearchType = "documentation";
+let lastSearchType = "emails";
 let lastTotal = 0;
 let currentMaxResults = 10;
+
+function formatScore(result) {
+  const rawScore =
+    result.relevance_score ??
+    result.rerank_score ??
+    result.similarity_score ??
+    result.keyword_score ??
+    result.semantic_score;
+
+  if (!Number.isFinite(rawScore)) {
+    return "";
+  }
+
+  const precision = rawScore < 1 ? 4 : 2;
+  return `Score ${rawScore.toFixed(precision)}`;
+}
 
 function formatRecipientList(value, maxItems = 2) {
   if (!value) return "—";
@@ -34,6 +51,76 @@ function formatRecipientList(value, maxItems = 2) {
     return `${visible} +${value.length - maxItems} more`;
   }
   return value;
+}
+
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function highlightMatches(text, query) {
+  if (!text || !query) return text;
+  const keywords = query.toLowerCase().split(/\s+/).filter(kw => kw.length > 2);
+  if (keywords.length === 0) return text;
+  let highlighted = text;
+  keywords.forEach(kw => {
+    const regex = new RegExp(`(${escapeRegex(kw)})`, "gi");
+    highlighted = highlighted.replace(regex, "<mark>$1</mark>");
+  });
+  return highlighted;
+}
+
+function explainScore(result) {
+  const score =
+    result.relevance_score ??
+    result.rerank_score ??
+    result.similarity_score ??
+    result.keyword_score ??
+    result.semantic_score;
+
+  if (!Number.isFinite(score)) {
+    return { label: "—", className: "quality-unknown" };
+  }
+
+  const mode = result.search_mode || "unknown";
+
+  // RRF (Reciprocal Rank Fusion) produces small scores: 1/(60+rank)
+  // Rank 1 ≈ 0.0164, Rank 10 ≈ 0.0143, Rank 50 ≈ 0.0091
+  if (mode === "hybrid_rrf") {
+    if (score >= 0.015) {
+      return { label: "Excellent", className: "quality-excellent" };
+    } else if (score >= 0.013) {
+      return { label: "Good", className: "quality-good" };
+    } else if (score >= 0.010) {
+      return { label: "Fair", className: "quality-fair" };
+    } else {
+      return { label: "Weak", className: "quality-weak" };
+    }
+  }
+
+  // All other modes use 0-1 scale
+  // Keyword search tends to have lower scores, so adjust thresholds
+  if (mode === "keyword") {
+    if (score >= 0.6) {
+      return { label: "Excellent", className: "quality-excellent" };
+    } else if (score >= 0.35) {
+      return { label: "Good", className: "quality-good" };
+    } else if (score >= 0.15) {
+      return { label: "Fair", className: "quality-fair" };
+    } else {
+      return { label: "Weak", className: "quality-weak" };
+    }
+  }
+
+  // Semantic/hybrid/rerank/hyde - standard 0-1 thresholds
+  if (score >= 0.7) {
+    return { label: "Excellent", className: "quality-excellent" };
+  } else if (score >= 0.5) {
+    return { label: "Good", className: "quality-good" };
+  } else if (score >= 0.3) {
+    return { label: "Fair", className: "quality-fair" };
+  } else {
+    return { label: "Weak", className: "quality-weak" };
+  }
 }
 
 function isEmailDoc(data, fallbackPath) {
@@ -114,27 +201,44 @@ function renderResults(results) {
     item.className = "result-item";
     item.addEventListener("click", () => selectResult(index));
 
+    const titleText = result.title || result.subject || result.file_name || result.file_path || "Untitled";
     const title = document.createElement("div");
     title.className = "result-title";
-    title.textContent = result.metadata?.subject || result.file_name || result.file_path || "Untitled";
+    title.innerHTML = highlightMatches(titleText, lastQuery);
+
+    const summary = document.createElement("div");
+    summary.className = "result-summary";
+    if (result.type === "email" && result.summary) {
+      summary.innerHTML = highlightMatches(result.summary, lastQuery);
+    }
 
     const meta = document.createElement("div");
     meta.className = "result-meta";
     const path = result.file_path || result.id || "";
-    const score = result.relevance_score ? `Score ${result.relevance_score.toFixed(2)}` : "";
-    meta.textContent = [path, score].filter(Boolean).join(" • ");
+    const score = formatScore(result);
+    const typeLabel = result.type ? result.type.toUpperCase() : "";
+    meta.textContent = [typeLabel, path, score].filter(Boolean).join(" • ");
+
+    const quality = explainScore(result);
+    const qualityBadge = document.createElement("span");
+    qualityBadge.className = `quality-badge ${quality.className}`;
+    qualityBadge.textContent = quality.label;
 
     const emailMeta = document.createElement("div");
     emailMeta.className = "result-meta";
-    if (result.metadata?.from || result.metadata?.to || result.metadata?.date) {
-      const from = result.metadata?.from ? `From: ${result.metadata.from}` : "";
-      const to = result.metadata?.to ? `To: ${formatRecipientList(result.metadata.to)}` : "";
-      const date = result.metadata?.date_iso || result.metadata?.date ? `Date: ${result.metadata?.date_iso || result.metadata?.date}` : "";
+    if (result.from || result.to || result.date) {
+      const from = result.from ? `From: ${result.from}` : "";
+      const to = result.to ? `To: ${formatRecipientList(result.to)}` : "";
+      const date = result.date ? `Date: ${result.date}` : "";
       emailMeta.textContent = [from, to, date].filter(Boolean).join(" • ");
     }
 
     item.appendChild(title);
+    if (summary.innerHTML) {
+      item.appendChild(summary);
+    }
     item.appendChild(meta);
+    meta.appendChild(qualityBadge);
     if (emailMeta.textContent) {
       item.appendChild(emailMeta);
     }
@@ -192,23 +296,24 @@ async function selectResult(index) {
     metaLine.textContent = metaLines.join(" • ");
     detailBody.appendChild(metaLine);
 
-    if (data.metadata && isEmailDoc(data, path)) {
+    const emailMetaSource = data.metadata || data;
+    if (emailMetaSource && isEmailDoc(data, path)) {
       const emailBlock = document.createElement("div");
       emailBlock.className = "detail-email";
 
       const header = document.createElement("div");
       header.className = "detail-email-header";
-      header.textContent = data.metadata.subject || "No subject";
+      header.textContent = emailMetaSource.subject || "No subject";
       emailBlock.appendChild(header);
 
       const rows = document.createElement("div");
       rows.className = "detail-email-rows";
 
       const rowData = [
-        { label: "From", value: data.metadata.from || "—" },
-        { label: "To", value: formatRecipientList(data.metadata.to) },
-        { label: "Cc", value: data.metadata.cc ? formatRecipientList(data.metadata.cc) : null },
-        { label: "Date", value: data.metadata.date_iso || data.metadata.date || "—" }
+        { label: "From", value: emailMetaSource.from || "—" },
+        { label: "To", value: formatRecipientList(emailMetaSource.to) },
+        { label: "Cc", value: emailMetaSource.cc ? formatRecipientList(emailMetaSource.cc) : null },
+        { label: "Date", value: emailMetaSource.date || "—" }
       ];
 
       rowData.forEach((item) => {
@@ -226,7 +331,7 @@ async function selectResult(index) {
         rows.appendChild(row);
       });
 
-      if (data.metadata.attachment_count) {
+      if (emailMetaSource.attachment_count) {
         const row = document.createElement("div");
         row.className = "detail-email-row";
         const label = document.createElement("div");
@@ -234,7 +339,7 @@ async function selectResult(index) {
         label.textContent = "Attachments";
         const value = document.createElement("div");
         value.className = "detail-email-value";
-        value.textContent = `${data.metadata.attachment_count}`;
+        value.textContent = `${emailMetaSource.attachment_count}`;
         row.appendChild(label);
         row.appendChild(value);
         rows.appendChild(row);
@@ -282,7 +387,8 @@ async function executeSearch() {
       body: JSON.stringify({
         query: lastQuery,
         searchType: lastSearchType,
-        maxResults: currentMaxResults
+        maxResults: currentMaxResults,
+        mode: searchMode ? searchMode.value : "auto"
       })
     });
 
@@ -337,3 +443,38 @@ systemThemeListener = () => {
   }
 };
 systemThemeMedia.addEventListener("change", systemThemeListener);
+
+// Help modal
+const helpModal = document.getElementById("helpModal");
+const searchModeHelp = document.getElementById("searchModeHelp");
+const helpModalClose = document.getElementById("helpModalClose");
+
+function openHelpModal() {
+  helpModal.classList.add("visible");
+}
+
+function closeHelpModal() {
+  helpModal.classList.remove("visible");
+}
+
+if (searchModeHelp) {
+  searchModeHelp.addEventListener("click", openHelpModal);
+}
+
+if (helpModalClose) {
+  helpModalClose.addEventListener("click", closeHelpModal);
+}
+
+if (helpModal) {
+  helpModal.addEventListener("click", (event) => {
+    if (event.target === helpModal) {
+      closeHelpModal();
+    }
+  });
+}
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && helpModal.classList.contains("visible")) {
+    closeHelpModal();
+  }
+});

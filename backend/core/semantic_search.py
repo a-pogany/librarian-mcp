@@ -120,9 +120,14 @@ class SemanticSearchEngine:
                         'file_type': doc['file_type'],
                         'snippet': snippet,
                         'content': snippet,  # For reranker
+                        'content_preview': doc.get('content', '')[:500],
                         'relevance_score': round(result['similarity'], 2),
                         'similarity_score': round(result['similarity'], 2),
-                        'last_modified': doc['last_modified']
+                        'last_modified': doc['last_modified'],
+                        'metadata': doc.get('metadata', {}),
+                        'headings': doc.get('headings', []),
+                        'doc_type': doc.get('doc_type'),
+                        'tags': doc.get('tags', [])
                     })
 
             # Stage 2: Rerank results for better precision
@@ -142,20 +147,32 @@ class SemanticSearchEngine:
         component: Optional[str],
         file_types: Optional[List[str]]
     ) -> Optional[Dict[str, Any]]:
-        """Build metadata filter for ChromaDB"""
-        where_filter = {}
+        """Build metadata filter for ChromaDB
+
+        ChromaDB requires $and operator when multiple conditions are present.
+        Single condition: {"field": "value"}
+        Multiple conditions: {"$and": [{"field1": "value1"}, {"field2": "value2"}]}
+        """
+        conditions = []
 
         if product:
-            where_filter['product'] = product
+            conditions.append({'product': product})
 
         if component:
-            where_filter['component'] = component
+            conditions.append({'component': component})
 
         if file_types:
             # ChromaDB supports $in operator for multiple values
-            where_filter['file_type'] = {"$in": file_types}
+            conditions.append({'file_type': {"$in": file_types}})
 
-        return where_filter if where_filter else None
+        if not conditions:
+            return None
+        elif len(conditions) == 1:
+            # Single condition - return directly
+            return conditions[0]
+        else:
+            # Multiple conditions - wrap in $and
+            return {"$and": conditions}
 
     def _extract_snippet(self, content: str, query: str, max_length: int = 200) -> str:
         """

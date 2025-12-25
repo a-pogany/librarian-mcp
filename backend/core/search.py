@@ -71,7 +71,12 @@ class SearchEngine:
                     'file_type': doc['file_type'],
                     'snippet': snippet,
                     'relevance_score': score,
-                    'last_modified': doc['last_modified']
+                    'last_modified': doc['last_modified'],
+                    'metadata': doc.get('metadata', {}),
+                    'headings': doc.get('headings', []),
+                    'content_preview': doc.get('content', '')[:500],
+                    'doc_type': doc.get('doc_type'),
+                    'tags': doc.get('tags', [])
                 })
 
         # Sort by relevance

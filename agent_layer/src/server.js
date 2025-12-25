@@ -5,7 +5,7 @@ import { MCPClientManager } from "./mcpClient.js";
 import { rewriteQueryWithOpenAI } from "./llm/openai.js";
 import { rewriteQueryWithOllama } from "./llm/ollama.js";
 
-const MCP_SSE_URL = process.env.MCP_SSE_URL || "http://127.0.0.1:3001/mcp/sse";
+const MCP_SSE_URL = process.env.MCP_SSE_URL || "http://127.0.0.1:3001/mcp-http";
 const PORT = Number.parseInt(process.env.AGENT_PORT || "4010", 10);
 const AGENT_USE_LLM = process.env.AGENT_USE_LLM === "true";
 const LLM_PROVIDER = process.env.LLM_PROVIDER || "ollama";
@@ -53,11 +53,7 @@ async function rewriteQuery(query) {
 }
 
 app.get("/api/status", async (_req, res) => {
-  try {
-    await mcp.connect();
-  } catch {
-    // Connection errors are surfaced in status response.
-  }
+  await mcp.ping();
 
   res.json({
     mcp: mcp.getStatus(),

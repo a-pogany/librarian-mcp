@@ -66,3 +66,10 @@ chroma_db/
 .DS_Store
 Thumbs.db
 .aider*
+conductor
+
+# Local config with machine-specific paths
+/config.json
+
+# ChromaDB data files (should not be in repo)
+.claude/archive_since_2023_vector_db/

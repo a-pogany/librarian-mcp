@@ -13,6 +13,7 @@ from typing import List, Dict, Optional, Any
 from collections import defaultdict
 from .search import SearchEngine
 from .semantic_search import SemanticSearchEngine
+from .result_enhancer import ResultEnhancer
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,8 @@ class HybridSearchEngine:
         self.enable_semantic_cache = enable_semantic_cache
         self.enable_query_routing = enable_query_routing
         self.enable_parent_context = enable_parent_context
+
+        self.result_enhancer = ResultEnhancer(summary_length=150)
 
         # Validate mode
         valid_modes = ['keyword', 'semantic', 'hybrid', 'rerank', 'hyde', 'auto']
@@ -159,7 +162,9 @@ class HybridSearchEngine:
         max_results: int = 10,
         mode: Optional[str] = None,
         include_parent_context: Optional[bool] = None,
-        use_cache: bool = True
+        use_cache: bool = True,
+        enhance_results: bool = True,
+        include_full_metadata: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Search documents using configured mode
@@ -202,7 +207,13 @@ class HybridSearchEngine:
                 # Still apply parent context if needed (cached results may not have it)
                 if self._should_include_parent_context(include_parent_context):
                     cached_results = self._enrich_with_parent_context(cached_results)
-                return cached_results[:max_results]
+                results = cached_results[:max_results]
+                if enhance_results:
+                    results = self.result_enhancer.enhance(
+                        results,
+                        include_full_metadata=include_full_metadata
+                    )
+                return results
 
         # Route to appropriate search method
         if search_mode == 'keyword':
@@ -226,6 +237,12 @@ class HybridSearchEngine:
         # Enrich with parent context
         if self._should_include_parent_context(include_parent_context):
             results = self._enrich_with_parent_context(results)
+
+        if enhance_results:
+            results = self.result_enhancer.enhance(
+                results,
+                include_full_metadata=include_full_metadata
+            )
 
         return results
 
@@ -384,11 +401,16 @@ class HybridSearchEngine:
                     'file_name': doc_data['file_name'],
                     'file_type': doc_data['file_type'],
                     'snippet': doc_data['snippet'],
+                    'content_preview': doc_data.get('content_preview', ''),
                     'relevance_score': round(hybrid_score, 2),
                     'keyword_score': round(keyword_score, 2),
                     'semantic_score': round(semantic_score, 2),
                     'search_mode': 'hybrid',
-                    'last_modified': doc_data['last_modified']
+                    'last_modified': doc_data['last_modified'],
+                    'metadata': doc_data.get('metadata', {}),
+                    'headings': doc_data.get('headings', []),
+                    'doc_type': doc_data.get('doc_type'),
+                    'tags': doc_data.get('tags', [])
                 })
 
         # Sort by hybrid score
@@ -505,11 +527,16 @@ class HybridSearchEngine:
                 'file_name': result['file_name'],
                 'file_type': result['file_type'],
                 'snippet': result['snippet'],
+                'content_preview': result.get('content_preview', ''),
                 'relevance_score': round(combined_score, 2),
                 'semantic_score': round(semantic_score, 2),
                 'keyword_score': round(keyword_score, 2),
                 'search_mode': 'rerank',
-                'last_modified': result['last_modified']
+                'last_modified': result['last_modified'],
+                'metadata': result.get('metadata', {}),
+                'headings': result.get('headings', []),
+                'doc_type': result.get('doc_type'),
+                'tags': result.get('tags', [])
             })
 
         # Sort by combined score
@@ -547,20 +574,28 @@ class HybridSearchEngine:
             # Generate HyDE embedding (combines query with hypothetical document)
             hyde_embedding = self.hyde_generator.generate_hyde_embedding(query)
 
-            # Build metadata filter
-            where_filter = {}
+            # Build metadata filter (ChromaDB requires $and for multiple conditions)
+            conditions = []
             if product:
-                where_filter['product'] = product
+                conditions.append({'product': product})
             if component:
-                where_filter['component'] = component
+                conditions.append({'component': component})
             if file_types:
-                where_filter['file_type'] = {"$in": file_types}
+                conditions.append({'file_type': {"$in": file_types}})
+
+            # Build proper where filter
+            if not conditions:
+                where_filter = None
+            elif len(conditions) == 1:
+                where_filter = conditions[0]
+            else:
+                where_filter = {"$and": conditions}
 
             # Search vector database with HyDE embedding
             vector_results = self.semantic_engine.vector_db.search(
                 query_embedding=hyde_embedding,
                 n_results=max_results * 2,  # Get more candidates
-                where=where_filter if where_filter else None
+                where=where_filter
             )
 
             # Enrich results with document metadata
@@ -580,10 +615,15 @@ class HybridSearchEngine:
                         'file_name': doc['file_name'],
                         'file_type': doc['file_type'],
                         'snippet': snippet,
+                        'content_preview': doc.get('content', '')[:500],
                         'relevance_score': round(result['similarity'], 2),
                         'similarity_score': round(result['similarity'], 2),
                         'search_mode': 'hyde',
-                        'last_modified': doc['last_modified']
+                        'last_modified': doc['last_modified'],
+                        'metadata': doc.get('metadata', {}),
+                        'headings': doc.get('headings', []),
+                        'doc_type': doc.get('doc_type'),
+                        'tags': doc.get('tags', [])
                     })
 
             logger.debug(f"HyDE search returned {len(enriched_results)} results")

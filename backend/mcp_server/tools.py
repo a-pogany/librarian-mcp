@@ -11,7 +11,11 @@ indexer = None
 search_engine = None
 
 # Create MCP instance
-mcp = FastMCP("doc-search-mcp")
+mcp = FastMCP(
+    "doc-search-mcp",
+    stateless_http=True,
+    streamable_http_path="/"
+)
 
 
 @mcp.tool()
@@ -26,7 +30,9 @@ def search_documentation(
     modified_before: Optional[str] = None,
     max_results: int = 10,
     mode: Optional[str] = None,
-    include_parent_context: Optional[bool] = None
+    include_parent_context: Optional[bool] = None,
+    enhance_results: bool = True,
+    include_full_metadata: bool = False
 ) -> dict:
     """
     Search across all documentation with enhanced filtering and advanced RAG modes.
@@ -43,6 +49,8 @@ def search_documentation(
         max_results: Maximum number of results (default: 10, max: 50)
         mode: Search mode - keyword, semantic, hybrid, rerank, hyde, or auto (auto selects best mode)
         include_parent_context: Include parent document context (title, summary, headings)
+        enhance_results: Include rich metadata and summaries in results
+        include_full_metadata: Include full metadata payload in enhanced results
 
     Returns:
         Dictionary with search results including file paths, snippets,
@@ -58,14 +66,22 @@ def search_documentation(
         )
     """
     try:
+        # Exclude .eml files from documentation search (use search_emails for emails)
+        effective_file_types = file_types
+        if not file_types:
+            effective_file_types = ['.md', '.txt', '.docx']  # Default: docs only, no emails
+        elif '.eml' in file_types:
+            effective_file_types = [ft for ft in file_types if ft != '.eml']
+
         results = search_engine.search(
             query=query,
             product=product,
             component=component,
-            file_types=file_types,
+            file_types=effective_file_types,
             max_results=min(max_results, 50) * 2,  # Get more for filtering
             mode=mode,
-            include_parent_context=include_parent_context
+            include_parent_context=include_parent_context,
+            enhance_results=False
         )
 
         # Apply enhanced metadata filters
@@ -76,6 +92,12 @@ def search_documentation(
             modified_after=modified_after,
             modified_before=modified_before
         )
+
+        if enhance_results and hasattr(search_engine, 'result_enhancer'):
+            filtered_results = search_engine.result_enhancer.enhance(
+                filtered_results,
+                include_full_metadata=include_full_metadata
+            )
 
         # Determine the actual mode used
         actual_mode = mode or search_engine.get_mode()
@@ -164,7 +186,10 @@ def search_emails(
     date_before: Optional[str] = None,
     max_results: int = 10,
     mode: Optional[str] = None,
-    include_parent_context: Optional[bool] = None
+    include_parent_context: Optional[bool] = None,
+    enhance_results: bool = True,
+    include_full_metadata: bool = False,
+    collapse_threads: bool = True
 ) -> dict:
     """
     Search emails with email-specific filters.
@@ -183,6 +208,10 @@ def search_emails(
         max_results: Maximum number of results (default: 10, max: 50)
         mode: Search mode - keyword, semantic, hybrid, rerank, hyde, or auto
         include_parent_context: Include parent document context
+        enhance_results: Include rich metadata and summaries in results
+        include_full_metadata: Include full metadata payload in enhanced results
+        collapse_threads: Collapse results by thread, showing only the best match per thread (default: True).
+            When enabled, adds thread_count metadata showing total emails in that thread.
 
     Returns:
         Dictionary with email search results including:
@@ -202,12 +231,15 @@ def search_emails(
     """
     try:
         # Search only .eml files
+        # Get more candidates when collapsing threads (3x) vs filtering only (2x)
+        candidate_multiplier = 3 if collapse_threads else 2
         results = search_engine.search(
             query=query,
             file_types=['.eml'],
-            max_results=min(max_results, 50) * 2,  # Get more for filtering
+            max_results=min(max_results, 50) * candidate_multiplier,
             mode=mode,
-            include_parent_context=include_parent_context
+            include_parent_context=include_parent_context,
+            enhance_results=False
         )
 
         # Apply email-specific filters
@@ -220,6 +252,16 @@ def search_emails(
             date_after=date_after,
             date_before=date_before
         )
+
+        # Collapse by thread if enabled (keeps best match per thread)
+        if collapse_threads:
+            filtered_results = _collapse_by_thread(filtered_results)
+
+        if enhance_results and hasattr(search_engine, 'result_enhancer'):
+            filtered_results = search_engine.result_enhancer.enhance(
+                filtered_results,
+                include_full_metadata=include_full_metadata
+            )
 
         # Determine the actual mode used
         actual_mode = mode or search_engine.get_mode()
@@ -237,7 +279,8 @@ def search_emails(
                 "subject_contains": subject_contains,
                 "has_attachments": has_attachments,
                 "date_after": date_after,
-                "date_before": date_before
+                "date_before": date_before,
+                "collapse_threads": collapse_threads
             }
         }
     except Exception as e:
@@ -316,6 +359,76 @@ def _apply_email_filters(
         filtered.append(result)
 
     return filtered
+
+
+def _collapse_by_thread(results: List[dict]) -> List[dict]:
+    """
+    Collapse email results by thread, keeping only the highest-scoring email per thread.
+    
+    For each thread:
+    - Keeps the email with the highest relevance_score
+    - Adds thread_count metadata (total emails in thread)
+    - Adds is_thread_representative flag
+    
+    Args:
+        results: List of email search results with metadata containing thread_id
+        
+    Returns:
+        Collapsed results with one email per thread, sorted by relevance_score
+    """
+    from collections import defaultdict
+    
+    # Group by thread_id
+    threads: dict = defaultdict(list)
+    no_thread: List[dict] = []
+    
+    for result in results:
+        thread_id = result.get('metadata', {}).get('thread_id')
+        if thread_id:
+            threads[thread_id].append(result)
+        else:
+            # Emails without thread_id are kept as-is
+            no_thread.append(result)
+    
+    collapsed = []
+    
+    # For each thread, pick the highest-scoring email
+    for thread_id, thread_emails in threads.items():
+        # Sort by relevance_score descending
+        thread_emails.sort(
+            key=lambda x: x.get('relevance_score', 0),
+            reverse=True
+        )
+        
+        # Take the best one
+        best_email = thread_emails[0].copy()
+        
+        # Add thread metadata
+        best_email['thread_count'] = len(thread_emails)
+        best_email['is_thread_representative'] = True
+        
+        # Also add to nested metadata for consistency
+        if 'metadata' not in best_email:
+            best_email['metadata'] = {}
+        best_email['metadata']['thread_count'] = len(thread_emails)
+        best_email['metadata']['is_thread_representative'] = True
+        
+        collapsed.append(best_email)
+    
+    # Add emails without thread_id
+    for email in no_thread:
+        email_copy = email.copy()
+        email_copy['thread_count'] = 1
+        email_copy['is_thread_representative'] = True
+        collapsed.append(email_copy)
+    
+    # Sort by relevance_score descending
+    collapsed.sort(
+        key=lambda x: x.get('relevance_score', 0),
+        reverse=True
+    )
+    
+    return collapsed
 
 
 @mcp.tool()

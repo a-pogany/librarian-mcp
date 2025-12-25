@@ -56,15 +56,21 @@ class FolderVectorDatabase:
             )
 
         # Create or get collection with optimized settings
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name,
-            metadata={
-                "hnsw:space": "cosine",
-                "hnsw:construction_ef": 200,  # Higher for better quality
-                "hnsw:M": 16,  # Moderate connections
-                "hnsw:search_ef": 100  # Search-time accuracy
-            }
-        )
+        try:
+            self.collection = self.client.get_or_create_collection(
+                name=collection_name,
+                metadata={
+                    "hnsw:space": "cosine",
+                    "hnsw:construction_ef": 200,  # Higher for better quality
+                    "hnsw:M": 16,  # Moderate connections
+                    "hnsw:search_ef": 100  # Search-time accuracy
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to apply HNSW metadata, retrying with defaults: {e}")
+            self.collection = self.client.get_or_create_collection(
+                name=collection_name
+            )
 
         logger.info(f"Folder vector database initialized: {collection_name}")
 
@@ -249,3 +255,11 @@ class FolderVectorDatabase:
         except Exception as e:
             logger.error(f"Error getting folder DB stats: {e}")
             return {'error': str(e)}
+
+    def get_count(self) -> int:
+        """Get number of folders in the database"""
+        try:
+            return self.collection.count()
+        except Exception as e:
+            logger.error(f"Error getting folder count: {e}")
+            return 0

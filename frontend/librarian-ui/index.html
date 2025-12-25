@@ -45,9 +45,19 @@
           autocomplete="off"
         />
         <select id="searchType">
+          <option value="emails" selected>Emails</option>
           <option value="documentation">Documentation</option>
-          <option value="emails">Emails</option>
         </select>
+        <div class="search-mode-group">
+          <select id="searchMode" title="Search strategy">
+            <option value="auto">Auto</option>
+            <option value="keyword">Keyword</option>
+            <option value="hybrid">Hybrid</option>
+            <option value="semantic">Semantic</option>
+            <option value="hyde">HyDE</option>
+          </select>
+          <button type="button" class="help-button" id="searchModeHelp" title="Search mode help">?</button>
+        </div>
         <button id="searchButton">Search</button>
       </div>
       <div class="search-meta" id="searchMeta">Ready.</div>
@@ -79,6 +89,48 @@
       </section>
     </main>
 
-    <script src="app.js"></script>
+    <div class="modal-overlay" id="helpModal">
+      <div class="modal-content">
+        <button class="modal-close" id="helpModalClose">&times;</button>
+        <h3>Search Mode Guide</h3>
+        <div class="help-table">
+          <div class="help-row help-header">
+            <div class="help-mode">Mode</div>
+            <div class="help-use">Best For</div>
+            <div class="help-examples">Examples</div>
+          </div>
+          <div class="help-row">
+            <div class="help-mode"><strong>Keyword</strong></div>
+            <div class="help-use">Exact terms, filenames, error codes, IDs</div>
+            <div class="help-examples"><code>error.log</code>, <code>TN22116</code>, <code>ERROR-5043</code></div>
+          </div>
+          <div class="help-row">
+            <div class="help-mode"><strong>Semantic</strong></div>
+            <div class="help-use">Conceptual questions, synonyms, paraphrased content</div>
+            <div class="help-examples">"payment failures", "authentication problems"</div>
+          </div>
+          <div class="help-row">
+            <div class="help-mode"><strong>Hybrid</strong></div>
+            <div class="help-use">General purpose, mixed queries with terms + concepts</div>
+            <div class="help-examples">"unfinished transaction handling in SG2020"</div>
+          </div>
+          <div class="help-row">
+            <div class="help-mode"><strong>HyDE</strong></div>
+            <div class="help-use">Vague queries, "how to" questions, conceptual searches</div>
+            <div class="help-examples">"how do we handle incomplete payments?"</div>
+          </div>
+          <div class="help-row">
+            <div class="help-mode"><strong>Auto</strong></div>
+            <div class="help-use">When unsure — system analyzes query and picks best mode</div>
+            <div class="help-examples">Any query</div>
+          </div>
+        </div>
+        <div class="help-tip">
+          <strong>Quick tip:</strong> Use <em>Keyword</em> for exact filenames/codes, <em>HyDE</em> for vague questions, <em>Auto</em> when unsure.
+        </div>
+      </div>
+    </div>
+
+    <script src="app.js?v=2.2.1"></script>
   </body>
 </html>

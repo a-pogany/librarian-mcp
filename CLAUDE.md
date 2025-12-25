@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Librarian MCP** - Enterprise RAG Documentation Search System
 
-**Version**: 2.1.0 (Production Ready)
-**Status**: ✅ All Phase 1, Phase 2, Phase 2.5, and Phase 3 (Advanced RAG) features complete
+**Version**: 2.2.0 (Production Ready)
+**Status**: ✅ All Phase 1, Phase 2, Phase 2.5, Phase 3 (Advanced RAG), and Phase 4 (Web UI) features complete
 
 **Librarian** is an enterprise-grade documentation search system enabling LLMs to autonomously retrieve technical documentation through MCP with advanced RAG capabilities:
 
@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **✅ Phase 2 (v2.0.0):** E5-large-v2 embeddings (1024d), hierarchical chunking (512-token, 128-overlap), two-stage reranking, persistent ChromaDB, query caching, BM25 search, RRF hybrid fusion
 - **✅ Phase 2.5 (v2.0.3):** Reranking mode, enhanced chunking (all file types), rich metadata (tags, doc types, temporal filtering)
 - **✅ Phase 3 (v2.1.0):** HyDE retrieval, semantic query caching, intelligent query routing, parent document context
-- **🔜 Phase 4:** REST API + React Web UI
+- **✅ Phase 4 (v2.2.0):** Agent layer (REST API on port 4010), Web UI (vanilla JS), LLM query rewriting (OpenAI/Ollama), result enhancement, email/doc type separation
 
 **Key Capabilities**:
 - **Relevance**: 85% Precision@10 (was 40% in v1.0)
@@ -51,6 +51,34 @@ python stdio_server.py
 # Uses stdin/stdout for MCP communication
 ```
 
+**Agent Layer (REST API for Web UI):**
+```bash
+cd agent_layer
+npm install  # First time only
+npm start
+# Agent layer starts on http://127.0.0.1:4010
+```
+
+**Web UI (Frontend):**
+```bash
+# Serve the frontend (any static file server works)
+cd frontend/librarian-ui
+python3 -m http.server 8080
+# Open http://127.0.0.1:8080 in browser
+```
+
+**Full Stack Startup (all 3 components):**
+```bash
+# Terminal 1: MCP Backend
+cd backend && python main.py
+
+# Terminal 2: Agent Layer
+cd agent_layer && npm start
+
+# Terminal 3: Frontend (or just open index.html)
+cd frontend/librarian-ui && python3 -m http.server 8080
+```
+
 ### Testing
 ```bash
 # Run all tests from project root
@@ -78,6 +106,39 @@ pytest backend/tests/ --cov=backend/core --cov=backend/mcp_server --cov-report=h
 
 ## Architecture Overview
 
+### Three-Tier Architecture (v2.2.0)
+```
+┌─────────────────────────────────────────────────────────────┐
+│  FRONTEND (Browser)                                         │
+│  frontend/librarian-ui/                                     │
+│  ├─ index.html (search UI, results list, detail panel)     │
+│  ├─ app.js (search, highlighting, quality badges, modals)  │
+│  └─ styles.css (dark/light themes, responsive)             │
+└────────────────────────┬────────────────────────────────────┘
+                         │ HTTP (port 8080 or file://)
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  AGENT LAYER (Node.js/Express)                              │
+│  agent_layer/src/server.js - Port 4010                      │
+│  ├─ REST API: /api/search, /api/document, /api/status      │
+│  ├─ LLM Query Rewriting (OpenAI/Ollama, optional)          │
+│  └─ MCP Client (connects to backend via SSE)               │
+└────────────────────────┬────────────────────────────────────┘
+                         │ MCP over HTTP/SSE (port 3001)
+                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  MCP BACKEND (Python/FastAPI)                               │
+│  backend/main.py - Port 3001                                │
+│  ├─ MCP Tools: search_emails, search_documentation, etc.   │
+│  ├─ HybridSearchEngine (6 modes: keyword→auto)             │
+│  ├─ ResultEnhancer (type-aware metadata enrichment)        │
+│  └─ FileIndexer + ChromaDB (persistent vectors)            │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+              Documentation Files (.md, .txt, .docx, .eml)
+```
+
 ### Component Flow (v2.0.0 - Enterprise RAG)
 ```
 Documentation Files (.md, .txt, .docx up to 600 pages)
@@ -98,7 +159,7 @@ HybridSearchEngine (RRF Fusion + Advanced RAG)
     ↓
 MCP Server (HTTP/SSE or STDIO)
     ↓
-LLM Client (Claude Desktop, Cline, etc.)
+LLM Client (Claude Desktop, Cline, etc.) OR Agent Layer → Web UI
 ```
 
 ### Search Pipeline (Hybrid Mode with RRF)
@@ -266,6 +327,47 @@ Return Results (150-200ms latency)
 - Loads config.json and .env
 - Supports SEARCH_MODE and ENABLE_EMBEDDINGS environment variables
 - Validates and sets defaults for both keyword and semantic search
+
+**backend/core/result_enhancer.py** (NEW in v2.2.0)
+- `ResultEnhancer` - Type-aware result enhancement for immediate context
+- `_enhance_email()` - Adds from, to, cc, subject, date, attachments, thread_id
+- `_enhance_document()` - Adds title, headings, doc_type, tags, summary
+- `_generate_summary()` - Smart truncation at sentence boundaries
+- Impact: 80% fewer get_document calls needed
+
+**agent_layer/src/server.js** (NEW in v2.2.0 - Phase 4)
+- Node.js/Express REST API bridge between Web UI and MCP backend
+- Port 4010 by default (configurable via AGENT_PORT)
+- Endpoints:
+  - `GET /api/status` - MCP connection status + LLM status
+  - `POST /api/search` - Search with query rewriting, routes to search_emails or search_documentation
+  - `POST /api/document` - Document retrieval via get_document tool
+  - `GET /api/health` - Health check
+- LLM Query Rewriting (optional):
+  - OpenAI: Set AGENT_USE_LLM=true, LLM_PROVIDER=openai, OPENAI_API_KEY
+  - Ollama: Set AGENT_USE_LLM=true, LLM_PROVIDER=ollama (default model: llama3.1)
+- MCP Client: Connects to backend via HTTP/SSE, auto-reconnects
+
+**agent_layer/src/mcpClient.js** (NEW in v2.2.0)
+- `MCPClientManager` - Manages MCP SSE connection to backend
+- `callTool()` - Invokes MCP tools (search_emails, search_documentation, get_document)
+- Connection health tracking and status reporting
+- Configurable via MCP_SSE_URL environment variable
+
+**frontend/librarian-ui/** (NEW in v2.2.0 - Phase 4)
+- Vanilla JavaScript web UI (no framework dependencies)
+- `index.html` - Search form, results list, detail panel, help modal
+- `app.js` - Search logic, keyword highlighting, quality badges, theme switching
+- `styles.css` - Dark/light themes, responsive design, aurora background
+- Features:
+  - Search type selector (Emails/Documents)
+  - Search mode selector (Auto/Keyword/Hybrid/Semantic/HyDE) with help popup
+  - Keyword highlighting in results
+  - Quality badges (Excellent/Good/Fair/Weak)
+  - Email metadata display (from, to, date, attachments)
+  - Document detail view with full content
+  - MCP connection status indicator
+  - Load More pagination
 
 ## Documentation Structure
 

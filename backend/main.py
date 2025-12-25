@@ -165,6 +165,7 @@ async def shutdown_event():
 
 # Mount MCP endpoints
 app.mount("/mcp", mcp.sse_app())
+app.mount("/mcp-http", mcp.streamable_http_app())
 
 
 if __name__ == "__main__":

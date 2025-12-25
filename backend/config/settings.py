@@ -112,3 +112,8 @@ def setup_logging(config: Dict):
             logging.StreamHandler()
         ]
     )
+
+    # Silence noisy access/request logs from polling
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("mcp.server").setLevel(logging.WARNING)
+    logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.WARNING)

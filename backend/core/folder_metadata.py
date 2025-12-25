@@ -112,9 +112,20 @@ class FolderMetadataExtractor:
         """
         parts = Path(doc_path).parts
 
-        # Return product/component (first two levels)
+        # Check if we have at least 2 parts for product/component
         if len(parts) >= 2:
-            return f"{parts[0]}/{parts[1]}"
+            # Check if parts[1] is a file (has extension) vs a directory
+            # Files like ".eml", ".md", ".txt" should not be treated as components
+            potential_component = parts[1]
+            common_extensions = {'.md', '.txt', '.docx', '.eml', '.pdf', '.html', '.rst', '.yaml', '.yml', '.json'}
+            is_file = any(potential_component.lower().endswith(ext) for ext in common_extensions)
+
+            if is_file:
+                # File directly under product - just return product name
+                return parts[0]
+            else:
+                # Proper product/component structure
+                return f"{parts[0]}/{parts[1]}"
         elif len(parts) == 1:
             return parts[0]
         else:

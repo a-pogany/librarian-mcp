@@ -478,6 +478,13 @@ class EMLParser(Parser):
         if self.extract_attachments:
             attachments = self._extract_attachment_metadata(msg)
 
+        # Add lightweight search hints so filenames/subjects are searchable
+        cleaned_body = self._append_search_hints(
+            cleaned_body,
+            headers=headers,
+            attachments=attachments
+        )
+
         # Normalize subject
         normalized_subject = ThreadIDGenerator.normalize_subject(headers.get('subject', ''))
 
@@ -520,21 +527,55 @@ class EMLParser(Parser):
             metadata=metadata
         )
 
+    def _append_search_hints(
+        self,
+        content: str,
+        headers: Dict,
+        attachments: List[Dict]
+    ) -> str:
+        """Append subject and attachment filenames to content for indexing."""
+        hints = []
+
+        subject = headers.get('subject')
+        if subject:
+            hints.append(f"Subject: {subject}")
+
+        from_header = headers.get('from')
+        if from_header:
+            hints.append(f"From: {from_header}")
+
+        to_header = headers.get('to')
+        if to_header:
+            if isinstance(to_header, list):
+                hints.append(f"To: {', '.join(to_header)}")
+            else:
+                hints.append(f"To: {to_header}")
+
+        attachment_names = [a.get('filename') for a in attachments if a.get('filename')]
+        if attachment_names:
+            hints.append(f"Attachments: {', '.join(attachment_names)}")
+
+        if not hints:
+            return content
+
+        separator = "\n\n" if content else ""
+        return f"{content}{separator}{'\n'.join(hints)}"
+
     def _extract_headers(self, msg: EmailMessage) -> Dict:
         """Extract email headers"""
         headers = {}
 
         # Standard headers
-        headers['message_id'] = msg.get('Message-ID', '').strip()
-        headers['subject'] = msg.get('Subject', '')
-        headers['from'] = msg.get('From', '')
-        headers['date'] = msg.get('Date', '')
-        headers['in_reply_to'] = msg.get('In-Reply-To', '').strip()
-        headers['references'] = msg.get('References', '').strip()
+        headers['message_id'] = self._safe_header_string(msg, 'Message-ID').strip()
+        headers['subject'] = self._safe_header_string(msg, 'Subject')
+        headers['from'] = self._safe_header_string(msg, 'From')
+        headers['date'] = self._safe_header_string(msg, 'Date')
+        headers['in_reply_to'] = self._safe_header_string(msg, 'In-Reply-To').strip()
+        headers['references'] = self._safe_header_string(msg, 'References').strip()
 
         # To/CC can have multiple recipients
-        headers['to'] = self._parse_address_list(msg.get('To', ''))
-        headers['cc'] = self._parse_address_list(msg.get('Cc', ''))
+        headers['to'] = self._parse_address_list(self._safe_header_string(msg, 'To'))
+        headers['cc'] = self._parse_address_list(self._safe_header_string(msg, 'Cc'))
 
         # Parse date to ISO format
         if headers['date']:
@@ -547,14 +588,107 @@ class EMLParser(Parser):
 
         return headers
 
+    def _safe_header_string(self, msg: EmailMessage, name: str) -> str:
+        """Safely read and stringify a header value."""
+        try:
+            value = msg.get(name, '')
+        except Exception as e:
+            logger.debug(f"Failed to read header {name}: {e}")
+            return ''
+
+        if value is None:
+            return ''
+        if isinstance(value, str):
+            return value
+        try:
+            return str(value)
+        except Exception as e:
+            logger.debug(f"Failed to stringify header {name}: {e}")
+            return ''
+
     def _parse_address_list(self, header: str) -> List[str]:
         """Parse comma-separated address list"""
         if not header:
             return []
 
-        # Simple split - could be enhanced with proper email parsing
-        addresses = [addr.strip() for addr in header.split(',')]
+        try:
+            from email.headerregistry import Group
+
+            if hasattr(header, 'addresses'):
+                addresses = []
+                for entry in header.addresses:
+                    if isinstance(entry, Group) or hasattr(entry, 'addresses'):
+                        for addr in entry.addresses:
+                            formatted = self._format_address(addr)
+                            if formatted:
+                                addresses.append(formatted)
+                    else:
+                        formatted = self._format_address(entry)
+                        if formatted:
+                            addresses.append(formatted)
+                return addresses
+        except Exception as e:
+            logger.debug(f"Header registry parse failed: {e}")
+
+        try:
+            header_str = str(header)
+        except Exception:
+            return []
+
+        addresses = [addr.strip() for addr in header_str.split(',')]
         return [addr for addr in addresses if addr]
+
+    def _format_address(self, addr) -> str:
+        """Format headerregistry Address into display string."""
+        if addr is None:
+            return ""
+
+        try:
+            from email.headerregistry import Group
+            if isinstance(addr, Group) or hasattr(addr, 'addresses'):
+                group_addresses = []
+                for entry in getattr(addr, 'addresses', []) or []:
+                    formatted = self._format_address(entry)
+                    if formatted:
+                        group_addresses.append(formatted)
+                display_name = getattr(addr, 'display_name', '') or ''
+                if group_addresses:
+                    if display_name:
+                        return f"{display_name}: {', '.join(group_addresses)}"
+                    return ', '.join(group_addresses)
+                return display_name
+        except Exception:
+            pass
+
+        try:
+            display_name = getattr(addr, 'display_name', '') or ''
+            addr_spec = getattr(addr, 'addr_spec', '') or ''
+
+            if not addr_spec:
+                username = getattr(addr, 'username', '') or ''
+                domain = getattr(addr, 'domain', '') or ''
+                if username and domain:
+                    addr_spec = f"{username}@{domain}"
+                elif username:
+                    addr_spec = username
+                else:
+                    local_part = getattr(addr, 'local_part', '') or ''
+                    domain = getattr(addr, 'domain', '') or ''
+                    if local_part and domain:
+                        addr_spec = f"{local_part}@{domain}"
+                    elif local_part:
+                        addr_spec = local_part
+
+            if display_name and addr_spec:
+                return f"{display_name} <{addr_spec}>"
+            if addr_spec:
+                return addr_spec
+            return display_name
+        except Exception:
+            try:
+                return str(addr)
+            except Exception:
+                return ""
 
     def _extract_body(self, msg: EmailMessage) -> str:
         """

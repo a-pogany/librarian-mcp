@@ -551,18 +551,4 @@ def search_documentation(
 - Implement ResultEnhancer as designed above
 - This document contains complete implementation specs
 
-
-
-
-## further independent errors to fix (i collect them here in a separate section)
-
-1. these errors at startup are not ok
-
-                    ERROR    Error initializing ChromaDB: '_type'                               vector_db.py:87
-                    ERROR    Error initializing RAG components: '_type'                          indexer.py:196
-                    ERROR    Error initializing RAG components: '_type'                              main.py:71
-                    WARNING  Falling back to keyword-only search                                     main.py:72
-
-2. the vector-db "Volumes/Pogany Attila SG archiv/APY_archive/emails/archive_since_2023_vector_db" is not used, instead, the vector_db is written to   "/Users/attila.pogany/Code/projects/librarian-mcp/.claude/archive_since_2023_vector_db"
-3. 
-4. 
+ 
