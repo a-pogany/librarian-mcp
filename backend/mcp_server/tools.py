@@ -32,7 +32,8 @@ def search_documentation(
     mode: Optional[str] = None,
     include_parent_context: Optional[bool] = None,
     enhance_results: bool = True,
-    include_full_metadata: bool = False
+    include_full_metadata: bool = False,
+    max_per_document: Optional[int] = None
 ) -> dict:
     """
     Search across all documentation with enhanced filtering and advanced RAG modes.
@@ -51,6 +52,7 @@ def search_documentation(
         include_parent_context: Include parent document context (title, summary, headings)
         enhance_results: Include rich metadata and summaries in results
         include_full_metadata: Include full metadata payload in enhanced results
+        max_per_document: Maximum chunks per document (default: 3, 0=unlimited)
 
     Returns:
         Dictionary with search results including file paths, snippets,
@@ -62,7 +64,8 @@ def search_documentation(
             product="symphony",
             mode="hyde",  # Use HyDE for conceptual queries
             include_parent_context=True,
-            max_results=5
+            max_results=5,
+            max_per_document=2  # Limit to 2 chunks per document for diversity
         )
     """
     try:
@@ -81,7 +84,8 @@ def search_documentation(
             max_results=min(max_results, 50) * 2,  # Get more for filtering
             mode=mode,
             include_parent_context=include_parent_context,
-            enhance_results=False
+            enhance_results=False,
+            max_per_document=max_per_document
         )
 
         # Apply enhanced metadata filters
@@ -189,7 +193,8 @@ def search_emails(
     include_parent_context: Optional[bool] = None,
     enhance_results: bool = True,
     include_full_metadata: bool = False,
-    collapse_threads: bool = True
+    collapse_threads: bool = True,
+    max_per_document: Optional[int] = None
 ) -> dict:
     """
     Search emails with email-specific filters.
@@ -212,6 +217,7 @@ def search_emails(
         include_full_metadata: Include full metadata payload in enhanced results
         collapse_threads: Collapse results by thread, showing only the best match per thread (default: True).
             When enabled, adds thread_count metadata showing total emails in that thread.
+        max_per_document: Maximum chunks per document (default: 3, 0=unlimited)
 
     Returns:
         Dictionary with email search results including:
@@ -239,7 +245,8 @@ def search_emails(
             max_results=min(max_results, 50) * candidate_multiplier,
             mode=mode,
             include_parent_context=include_parent_context,
-            enhance_results=False
+            enhance_results=False,
+            max_per_document=max_per_document
         )
 
         # Apply email-specific filters

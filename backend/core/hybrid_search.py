@@ -49,7 +49,9 @@ class HybridSearchEngine:
         enable_query_routing: bool = True,
         enable_parent_context: bool = True,
         cache_ttl: int = 300,
-        cache_similarity_threshold: float = 0.92
+        cache_similarity_threshold: float = 0.92,
+        enable_document_limiting: bool = True,
+        max_per_document: int = 3
     ):
         """
         Initialize hybrid search engine
@@ -68,6 +70,8 @@ class HybridSearchEngine:
             enable_parent_context: Enable parent document context enrichment
             cache_ttl: Cache time-to-live in seconds
             cache_similarity_threshold: Minimum similarity for semantic cache hit
+            enable_document_limiting: Enable document-level result limiting
+            max_per_document: Maximum chunks per document (default: 3)
         """
         self.keyword_engine = keyword_engine
         self.semantic_engine = semantic_engine
@@ -80,6 +84,8 @@ class HybridSearchEngine:
         self.enable_semantic_cache = enable_semantic_cache
         self.enable_query_routing = enable_query_routing
         self.enable_parent_context = enable_parent_context
+        self.enable_document_limiting = enable_document_limiting
+        self.max_per_document = max_per_document
 
         self.result_enhancer = ResultEnhancer(summary_length=150)
 
@@ -178,7 +184,8 @@ class HybridSearchEngine:
         include_parent_context: Optional[bool] = None,
         use_cache: bool = True,
         enhance_results: bool = True,
-        include_full_metadata: bool = False
+        include_full_metadata: bool = False,
+        max_per_document: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Search documents using configured mode
@@ -192,6 +199,9 @@ class HybridSearchEngine:
             mode: Override default mode (keyword, semantic, hybrid, rerank, hyde, auto)
             include_parent_context: Override parent context setting
             use_cache: Whether to use semantic cache
+            enhance_results: Whether to enhance results with metadata
+            include_full_metadata: Whether to include full metadata in results
+            max_per_document: Override max chunks per document (None = use default)
 
         Returns:
             List of matching documents with relevance scores
@@ -229,20 +239,35 @@ class HybridSearchEngine:
                     )
                 return results
 
+        # Determine document limiting settings
+        doc_limit = max_per_document if max_per_document is not None else self.max_per_document
+        apply_limiting = self.enable_document_limiting and doc_limit > 0
+
+        # Calculate how many candidates to fetch (need more if limiting will be applied)
+        candidate_multiplier = 2 if apply_limiting else 1
+        candidate_count = max_results * candidate_multiplier
+
         # Route to appropriate search method
         if search_mode == 'keyword':
-            results = self._keyword_search(query, product, component, file_types, max_results)
+            results = self._keyword_search(query, product, component, file_types, candidate_count)
         elif search_mode == 'semantic':
-            results = self._semantic_search(query, product, component, file_types, max_results)
+            results = self._semantic_search(query, product, component, file_types, candidate_count)
         elif search_mode == 'hybrid':
-            results = self._hybrid_search(query, product, component, file_types, max_results)
+            results = self._hybrid_search(query, product, component, file_types, candidate_count)
         elif search_mode == 'rerank':
-            results = self._rerank_search(query, product, component, file_types, max_results)
+            results = self._rerank_search(query, product, component, file_types, candidate_count)
         elif search_mode == 'hyde':
-            results = self._hyde_search(query, product, component, file_types, max_results)
+            results = self._hyde_search(query, product, component, file_types, candidate_count)
         else:
             logger.warning(f"Unknown mode '{search_mode}', using hybrid search")
-            results = self._hybrid_search(query, product, component, file_types, max_results)
+            results = self._hybrid_search(query, product, component, file_types, candidate_count)
+
+        # Apply document-level limiting if enabled
+        if apply_limiting:
+            results = self._limit_results_per_document(results, doc_limit)
+
+        # Truncate to max_results after limiting
+        results = results[:max_results]
 
         # Cache results
         if use_cache and self.semantic_cache and search_mode != 'keyword' and results:
@@ -677,6 +702,66 @@ class HybridSearchEngine:
             snippet = snippet[:max_length] + "..."
 
         return snippet
+
+    def _limit_results_per_document(
+        self,
+        results: List[Dict[str, Any]],
+        max_per_document: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        Limit number of results per document to prevent single-source domination
+
+        This provides diversity across documents while preserving precision.
+        Unlike MMR, this simple approach doesn't sacrifice relevance for variety.
+
+        Args:
+            results: Search results (already sorted by relevance)
+            max_per_document: Maximum chunks to return from each document (default: 3)
+
+        Returns:
+            Filtered results with diversity across documents
+        """
+        if max_per_document <= 0:
+            # No limiting, return all results
+            return results
+
+        doc_counts = {}
+        filtered = []
+
+        for result in results:
+            # Get parent document ID (handles both chunked and non-chunked results)
+            doc_id = result.get('parent_doc', result.get('file_path', ''))
+
+            # If no parent_doc, try to extract from chunk_id
+            if not doc_id and 'id' in result:
+                chunk_id = result['id']
+                if '#chunk_' in chunk_id:
+                    doc_id = chunk_id.split('#chunk_')[0]
+                else:
+                    doc_id = chunk_id
+
+            # Count chunks from this document
+            count = doc_counts.get(doc_id, 0)
+
+            if count < max_per_document:
+                filtered.append(result)
+                doc_counts[doc_id] = count + 1
+            else:
+                # Skip this result (already have enough from this document)
+                logger.debug(
+                    f"Skipping {result.get('file_name', 'unknown')} "
+                    f"(document limit reached: {max_per_document})"
+                )
+
+        # Log summary if filtering occurred
+        filtered_count = len(results) - len(filtered)
+        if filtered_count > 0:
+            logger.info(
+                f"Document limiting: {len(filtered)}/{len(results)} results kept "
+                f"({filtered_count} filtered, max_per_document={max_per_document})"
+            )
+
+        return filtered
 
     def _calculate_keyword_score(
         self,
