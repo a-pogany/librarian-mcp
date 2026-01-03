@@ -257,11 +257,12 @@ Return Results (150-200ms latency)
 - Automatic reranking pipeline when enabled
 - Returns documents ranked by rerank scores
 
-**backend/core/hybrid_search.py** (Enhanced v2.1.0)
+**backend/core/hybrid_search.py** (Enhanced v2.2.0)
 - `HybridSearchEngine` - Hybrid search with RRF fusion and advanced RAG
 - Six modes: keyword, semantic, hybrid, rerank, **hyde**, **auto** (Phase 3)
 - **RRF (Reciprocal Rank Fusion)**: score = 1/(k + rank)
 - **Rerank Mode**: Two-stage search with semantic + keyword filtering
+- **Document-Level Result Limiting** (v2.2.0): Prevents single-document domination by limiting chunks per document (default: 3)
 - **NEW HyDE Mode**: Hypothetical Document Embeddings for conceptual queries
 - **NEW Auto Mode**: Intelligent query routing to optimal search mode
 - **NEW**: Integrated semantic cache, query router, parent context enricher
@@ -450,9 +451,11 @@ python /path/to/backend/stdio_server.py
     "snippet_length": 200,           // Characters in snippets
     "context_lines": 3,              // Lines around matches
     "min_keyword_length": 2,         // Minimum keyword length
-    "mode": "hybrid",                // keyword | semantic | hybrid | rerank
+    "mode": "auto",                  // keyword | semantic | hybrid | rerank | hyde | auto
     "rerank_candidates": 50,         // Candidates for rerank mode (Phase 2.5)
-    "rerank_keyword_threshold": 0.1  // Keyword score threshold (Phase 2.5)
+    "rerank_keyword_threshold": 0.1, // Keyword score threshold (Phase 2.5)
+    "enable_document_limiting": true, // Enable document-level result limiting (v2.2.0)
+    "max_per_document": 3            // Max chunks per document (prevents single-doc domination)
   },
   "embeddings": {
     "enabled": true,                 // Enable RAG/semantic search
@@ -533,6 +536,57 @@ ENABLE_EMBEDDINGS=true     # Enable/disable RAG functionality
   - Conceptual questions → HyDE
   - Mixed queries → hybrid
 - Includes complexity scoring and confidence levels
+
+### Document-Level Result Limiting (v2.2.0)
+
+**Problem:** When a document contains 10+ relevant chunks, all results may come from a single document, hiding other relevant sources.
+
+**Solution:** Simple document-level limiting instead of complex MMR (Maximal Marginal Relevance).
+
+**How it works:**
+```python
+# Limit chunks per document (default: 3)
+max_per_document = 3
+
+# For each result, track document count
+# Skip results once document limit reached
+# Preserves relevance ranking (unlike MMR)
+```
+
+**Advantages over MMR:**
+- **Simpler** - No complex similarity calculations
+- **Preserves precision** - Doesn't sacrifice relevance for diversity
+- **Configurable** - Adjust per query or globally
+- **Faster** - O(n) filtering vs O(n²) MMR algorithm
+
+**Configuration:**
+```json
+{
+  "search": {
+    "enable_document_limiting": true,
+    "max_per_document": 3  // Adjust based on use case
+  }
+}
+```
+
+**Usage in MCP tools:**
+```python
+search_documentation(
+    query="authentication setup",
+    max_per_document=2  // Override default (3)
+)
+
+# Set to 0 for unlimited (disable limiting)
+search_documentation(query="...", max_per_document=0)
+```
+
+**When to use:**
+- Default (3): Good balance for most queries
+- Lower (1-2): Maximum diversity across documents
+- Higher (5+): Comprehensive coverage of each document
+- Unlimited (0): When you want all relevant chunks
+
+**Impact:** Prevents single-document domination while maintaining relevance order and preserving genuinely important information.
 
 ## Critical Implementation Details
 

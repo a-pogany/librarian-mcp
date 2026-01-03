@@ -138,14 +138,36 @@ async def startup_event():
     semantic_weight = config.get('embeddings', {}).get('semantic_weight', 0.5)
     rerank_candidates = config.get('search', {}).get('rerank_candidates', 50)
     rerank_keyword_threshold = config.get('search', {}).get('rerank_keyword_threshold', 0.1)
+    use_rrf = config.get('search', {}).get('use_rrf', True)
+
+    # Document limiting configuration
+    enable_document_limiting = config.get('search', {}).get('enable_document_limiting', True)
+    max_per_document = config.get('search', {}).get('max_per_document', 3)
+
+    # Cache configuration
+    cache_ttl = config.get('cache', {}).get('result_cache_ttl', 3600)
+    cache_similarity_threshold = config.get('cache', {}).get('semantic_cache_similarity_threshold', 0.92)
+
+    # Advanced RAG configuration
+    enable_hyde = config.get('advanced_rag', {}).get('hyde_enabled', True)
+    enable_query_routing = config.get('advanced_rag', {}).get('query_routing_enabled', True)
+    enable_parent_context = config.get('advanced_rag', {}).get('parent_context_enabled', True)
 
     search_engine = HybridSearchEngine(
         keyword_engine=keyword_engine,
         semantic_engine=semantic_engine,
         default_mode=search_mode,
         semantic_weight=semantic_weight,
+        use_rrf=use_rrf,
         rerank_candidates=rerank_candidates,
-        rerank_keyword_threshold=rerank_keyword_threshold
+        rerank_keyword_threshold=rerank_keyword_threshold,
+        enable_hyde=enable_hyde,
+        enable_query_routing=enable_query_routing,
+        enable_parent_context=enable_parent_context,
+        cache_ttl=cache_ttl,
+        cache_similarity_threshold=cache_similarity_threshold,
+        enable_document_limiting=enable_document_limiting,
+        max_per_document=max_per_document
     )
 
     logger.info(f"Hybrid search engine initialized in '{search_engine.get_mode()}' mode")
