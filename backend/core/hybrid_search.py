@@ -138,13 +138,27 @@ class HybridSearchEngine:
             except ImportError as e:
                 logger.warning(f"Failed to initialize query router: {e}")
 
+        # Extract underlying vector_db and indexer from semantic engine
+        # Handles both SemanticSearchEngine and HierarchicalSearchEngine
+        self._vector_db = None
+        self._semantic_indexer = None
+        if semantic_engine:
+            # Check if it's a HierarchicalSearchEngine (has semantic_search attribute)
+            if hasattr(semantic_engine, 'semantic_search') and semantic_engine.semantic_search:
+                self._vector_db = getattr(semantic_engine.semantic_search, 'vector_db', None)
+                self._semantic_indexer = getattr(semantic_engine.semantic_search, 'indexer', None)
+            else:
+                # Standard SemanticSearchEngine
+                self._vector_db = getattr(semantic_engine, 'vector_db', None)
+                self._semantic_indexer = getattr(semantic_engine, 'indexer', None)
+
         # Initialize parent context enricher
         self.parent_context_enricher = None
-        if enable_parent_context and hasattr(semantic_engine, 'indexer'):
+        if enable_parent_context and self._semantic_indexer:
             try:
                 from .parent_context import ParentContextEnricher
                 self.parent_context_enricher = ParentContextEnricher(
-                    indexer=semantic_engine.indexer
+                    indexer=self._semantic_indexer
                 )
                 logger.info("Parent context enricher initialized")
             except ImportError as e:
@@ -564,7 +578,7 @@ class HybridSearchEngine:
 
         This bridges the semantic gap between short queries and document content.
         """
-        if not self.hyde_generator or not self.semantic_engine:
+        if not self.hyde_generator or not self.semantic_engine or not self._vector_db:
             logger.warning("HyDE not available, falling back to semantic search")
             return self._semantic_search(query, product, component, file_types, max_results)
 
@@ -592,7 +606,7 @@ class HybridSearchEngine:
                 where_filter = {"$and": conditions}
 
             # Search vector database with HyDE embedding
-            vector_results = self.semantic_engine.vector_db.search(
+            vector_results = self._vector_db.search(
                 query_embedding=hyde_embedding,
                 n_results=max_results * 2,  # Get more candidates
                 where=where_filter
@@ -602,7 +616,7 @@ class HybridSearchEngine:
             enriched_results = []
             for result in vector_results:
                 doc_id = result['id']
-                doc = self.semantic_engine.indexer.index.documents.get(doc_id)
+                doc = self._semantic_indexer.index.documents.get(doc_id) if self._semantic_indexer else None
 
                 if doc:
                     snippet = self._extract_snippet(doc['content'], query)
