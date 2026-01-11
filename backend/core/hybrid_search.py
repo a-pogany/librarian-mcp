@@ -185,7 +185,17 @@ class HybridSearchEngine:
         use_cache: bool = True,
         enhance_results: bool = True,
         include_full_metadata: bool = False,
-        max_per_document: Optional[int] = None
+        max_per_document: Optional[int] = None,
+        # Email-specific filters (pre-filter before scoring)
+        sender: Optional[str] = None,
+        recipient: Optional[str] = None,
+        cc: Optional[str] = None,
+        folder: Optional[str] = None,
+        subject_contains: Optional[str] = None,
+        has_attachments: Optional[bool] = None,
+        date_after: Optional[str] = None,
+        date_before: Optional[str] = None,
+        thread_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Search documents using configured mode
@@ -202,6 +212,15 @@ class HybridSearchEngine:
             enhance_results: Whether to enhance results with metadata
             include_full_metadata: Whether to include full metadata in results
             max_per_document: Override max chunks per document (None = use default)
+            sender: Filter emails by sender (partial match)
+            recipient: Filter emails by recipient (partial match)
+            cc: Filter emails by CC recipient (partial match)
+            folder: Filter emails by folder (case-insensitive)
+            subject_contains: Filter emails by subject (partial match)
+            has_attachments: Filter emails with/without attachments
+            date_after: Filter emails after this date (ISO 8601)
+            date_before: Filter emails before this date (ISO 8601)
+            thread_id: Filter emails by thread ID (exact match)
 
         Returns:
             List of matching documents with relevance scores
@@ -214,6 +233,38 @@ class HybridSearchEngine:
             filters['component'] = component
         if file_types:
             filters['file_types'] = file_types
+        # Include email filters in cache key
+        if sender:
+            filters['sender'] = sender
+        if recipient:
+            filters['recipient'] = recipient
+        if cc:
+            filters['cc'] = cc
+        if folder:
+            filters['folder'] = folder
+        if subject_contains:
+            filters['subject_contains'] = subject_contains
+        if has_attachments is not None:
+            filters['has_attachments'] = has_attachments
+        if date_after:
+            filters['date_after'] = date_after
+        if date_before:
+            filters['date_before'] = date_before
+        if thread_id:
+            filters['thread_id'] = thread_id
+
+        # Build email filters dict for passing to internal methods
+        email_filters = {
+            'sender': sender,
+            'recipient': recipient,
+            'cc': cc,
+            'folder': folder,
+            'subject_contains': subject_contains,
+            'has_attachments': has_attachments,
+            'date_after': date_after,
+            'date_before': date_before,
+            'thread_id': thread_id
+        }
 
         # Determine search mode
         search_mode = mode or self.default_mode
@@ -249,18 +300,18 @@ class HybridSearchEngine:
 
         # Route to appropriate search method
         if search_mode == 'keyword':
-            results = self._keyword_search(query, product, component, file_types, candidate_count)
+            results = self._keyword_search(query, product, component, file_types, candidate_count, email_filters)
         elif search_mode == 'semantic':
-            results = self._semantic_search(query, product, component, file_types, candidate_count)
+            results = self._semantic_search(query, product, component, file_types, candidate_count, email_filters)
         elif search_mode == 'hybrid':
-            results = self._hybrid_search(query, product, component, file_types, candidate_count)
+            results = self._hybrid_search(query, product, component, file_types, candidate_count, email_filters)
         elif search_mode == 'rerank':
-            results = self._rerank_search(query, product, component, file_types, candidate_count)
+            results = self._rerank_search(query, product, component, file_types, candidate_count, email_filters)
         elif search_mode == 'hyde':
-            results = self._hyde_search(query, product, component, file_types, candidate_count)
+            results = self._hyde_search(query, product, component, file_types, candidate_count, email_filters)
         else:
             logger.warning(f"Unknown mode '{search_mode}', using hybrid search")
-            results = self._hybrid_search(query, product, component, file_types, candidate_count)
+            results = self._hybrid_search(query, product, component, file_types, candidate_count, email_filters)
 
         # Apply document-level limiting if enabled
         if apply_limiting:
@@ -308,16 +359,30 @@ class HybridSearchEngine:
         product: Optional[str],
         component: Optional[str],
         file_types: Optional[List[str]],
-        max_results: int
+        max_results: int,
+        email_filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """Execute keyword-only search"""
         logger.debug(f"Executing keyword search: {query}")
+        
+        # Extract email filter params (default to None if not provided)
+        ef = email_filters or {}
+        
         results = self.keyword_engine.search(
             query=query,
             product=product,
             component=component,
             file_types=file_types,
-            max_results=max_results
+            max_results=max_results,
+            sender=ef.get('sender'),
+            recipient=ef.get('recipient'),
+            cc=ef.get('cc'),
+            folder=ef.get('folder'),
+            subject_contains=ef.get('subject_contains'),
+            has_attachments=ef.get('has_attachments'),
+            date_after=ef.get('date_after'),
+            date_before=ef.get('date_before'),
+            thread_id=ef.get('thread_id')
         )
 
         # Add search mode metadata
@@ -332,20 +397,34 @@ class HybridSearchEngine:
         product: Optional[str],
         component: Optional[str],
         file_types: Optional[List[str]],
-        max_results: int
+        max_results: int,
+        email_filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """Execute semantic-only search"""
         if not self.semantic_engine:
             logger.warning("Semantic engine not available, falling back to keyword")
-            return self._keyword_search(query, product, component, file_types, max_results)
+            return self._keyword_search(query, product, component, file_types, max_results, email_filters)
 
         logger.debug(f"Executing semantic search: {query}")
+        
+        # Extract email filter params (default to None if not provided)
+        ef = email_filters or {}
+        
         results = self.semantic_engine.search(
             query=query,
             product=product,
             component=component,
             file_types=file_types,
-            max_results=max_results
+            max_results=max_results,
+            sender=ef.get('sender'),
+            recipient=ef.get('recipient'),
+            cc=ef.get('cc'),
+            folder=ef.get('folder'),
+            subject_contains=ef.get('subject_contains'),
+            has_attachments=ef.get('has_attachments'),
+            date_after=ef.get('date_after'),
+            date_before=ef.get('date_before'),
+            thread_id=ef.get('thread_id')
         )
 
         # Add search mode metadata
@@ -360,7 +439,8 @@ class HybridSearchEngine:
         product: Optional[str],
         component: Optional[str],
         file_types: Optional[List[str]],
-        max_results: int
+        max_results: int,
+        email_filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
         Execute hybrid search combining keyword and semantic results
@@ -369,9 +449,12 @@ class HybridSearchEngine:
         """
         if not self.semantic_engine:
             logger.warning("Semantic engine not available, falling back to keyword")
-            return self._keyword_search(query, product, component, file_types, max_results)
+            return self._keyword_search(query, product, component, file_types, max_results, email_filters)
 
         logger.debug(f"Executing hybrid search: {query}")
+
+        # Extract email filter params (default to None if not provided)
+        ef = email_filters or {}
 
         # Get results from both engines
         # Fetch proportionally more results for better fusion
@@ -382,7 +465,16 @@ class HybridSearchEngine:
             product=product,
             component=component,
             file_types=file_types,
-            max_results=max_results * candidate_multiplier
+            max_results=max_results * candidate_multiplier,
+            sender=ef.get('sender'),
+            recipient=ef.get('recipient'),
+            cc=ef.get('cc'),
+            folder=ef.get('folder'),
+            subject_contains=ef.get('subject_contains'),
+            has_attachments=ef.get('has_attachments'),
+            date_after=ef.get('date_after'),
+            date_before=ef.get('date_before'),
+            thread_id=ef.get('thread_id')
         )
 
         semantic_results = self.semantic_engine.search(
@@ -390,7 +482,16 @@ class HybridSearchEngine:
             product=product,
             component=component,
             file_types=file_types,
-            max_results=max_results * candidate_multiplier
+            max_results=max_results * candidate_multiplier,
+            sender=ef.get('sender'),
+            recipient=ef.get('recipient'),
+            cc=ef.get('cc'),
+            folder=ef.get('folder'),
+            subject_contains=ef.get('subject_contains'),
+            has_attachments=ef.get('has_attachments'),
+            date_after=ef.get('date_after'),
+            date_before=ef.get('date_before'),
+            thread_id=ef.get('thread_id')
         )
 
         # Use RRF or weighted average
@@ -512,7 +613,8 @@ class HybridSearchEngine:
         product: Optional[str],
         component: Optional[str],
         file_types: Optional[List[str]],
-        max_results: int
+        max_results: int,
+        email_filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
         Two-stage reranking search:
@@ -523,9 +625,12 @@ class HybridSearchEngine:
         """
         if not self.semantic_engine:
             logger.warning("Semantic engine not available, falling back to keyword")
-            return self._keyword_search(query, product, component, file_types, max_results)
+            return self._keyword_search(query, product, component, file_types, max_results, email_filters)
 
         logger.debug(f"Executing rerank search: {query}")
+
+        # Extract email filter params (default to None if not provided)
+        ef = email_filters or {}
 
         # Stage 1: Semantic search (broad recall)
         semantic_results = self.semantic_engine.search(
@@ -533,7 +638,16 @@ class HybridSearchEngine:
             product=product,
             component=component,
             file_types=file_types,
-            max_results=self.rerank_candidates
+            max_results=self.rerank_candidates,
+            sender=ef.get('sender'),
+            recipient=ef.get('recipient'),
+            cc=ef.get('cc'),
+            folder=ef.get('folder'),
+            subject_contains=ef.get('subject_contains'),
+            has_attachments=ef.get('has_attachments'),
+            date_after=ef.get('date_after'),
+            date_before=ef.get('date_before'),
+            thread_id=ef.get('thread_id')
         )
 
         # Stage 2: Keyword reranking
@@ -592,7 +706,8 @@ class HybridSearchEngine:
         product: Optional[str],
         component: Optional[str],
         file_types: Optional[List[str]],
-        max_results: int
+        max_results: int,
+        email_filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
         HyDE (Hypothetical Document Embeddings) search:
@@ -605,9 +720,12 @@ class HybridSearchEngine:
         """
         if not self.hyde_generator or not self.semantic_engine or not self._vector_db:
             logger.warning("HyDE not available, falling back to semantic search")
-            return self._semantic_search(query, product, component, file_types, max_results)
+            return self._semantic_search(query, product, component, file_types, max_results, email_filters)
 
         logger.debug(f"Executing HyDE search: {query}")
+
+        # Extract email filter params (default to None if not provided)
+        ef = email_filters or {}
 
         try:
             # Generate HyDE embedding (combines query with hypothetical document)
@@ -621,6 +739,18 @@ class HybridSearchEngine:
                 conditions.append({'component': component})
             if file_types:
                 conditions.append({'file_type': {"$in": file_types}})
+
+            # Add email-specific filters (exact match via ChromaDB WHERE clause)
+            if ef.get('folder'):
+                conditions.append({'email_folder': ef['folder'].lower()})
+            if ef.get('has_attachments') is not None:
+                conditions.append({'email_has_attachments': ef['has_attachments']})
+            if ef.get('thread_id'):
+                conditions.append({'email_thread_id': ef['thread_id']})
+            if ef.get('date_after'):
+                conditions.append({'email_date': {'$gte': ef['date_after']}})
+            if ef.get('date_before'):
+                conditions.append({'email_date': {'$lte': ef['date_before']}})
 
             # Build proper where filter
             if not conditions:
@@ -641,14 +771,24 @@ class HybridSearchEngine:
             enriched_results = []
             for result in vector_results:
                 doc_id = result['id']
-                doc = self._semantic_indexer.index.documents.get(doc_id) if self._semantic_indexer else None
+                # Support chunked document IDs (e.g., 'path#chunk0') by using base doc id
+                base_doc_id = doc_id.split('#', 1)[0]
+                doc = self._semantic_indexer.index.documents.get(base_doc_id) if self._semantic_indexer else None
+                
+                # Fallback: try full doc_id if base lookup failed
+                if not doc and self._semantic_indexer:
+                    doc = self._semantic_indexer.index.documents.get(doc_id)
 
                 if doc:
+                    # Apply partial-match email filters (not handled by ChromaDB WHERE)
+                    if ef and not self._matches_partial_email_filters(doc, ef):
+                        continue
+
                     snippet = self._extract_snippet(doc['content'], query)
 
                     enriched_results.append({
-                        'id': doc_id,
-                        'file_path': doc_id,
+                        'id': base_doc_id,
+                        'file_path': base_doc_id,
                         'product': doc['product'],
                         'component': doc['component'],
                         'file_name': doc['file_name'],
@@ -670,7 +810,59 @@ class HybridSearchEngine:
 
         except Exception as e:
             logger.error(f"HyDE search failed: {e}, falling back to semantic")
-            return self._semantic_search(query, product, component, file_types, max_results)
+            return self._semantic_search(query, product, component, file_types, max_results, email_filters)
+
+
+    def _matches_partial_email_filters(self, doc: Dict, filters: Dict) -> bool:
+        """Check if document matches partial-match email filters
+
+        These filters require substring matching which ChromaDB doesn't support,
+        so we apply them as post-filtering after vector search.
+
+        Args:
+            doc: Document dict from indexer
+            filters: Dict of filter name -> value (only non-None values)
+
+        Returns:
+            True if doc matches all partial-match filters
+        """
+        metadata = doc.get('metadata', {})
+        if not metadata:
+            return False
+
+        # Sender filter (partial match, case-insensitive)
+        if filters.get('sender'):
+            sender_val = metadata.get('from', '')
+            if not sender_val or filters['sender'].lower() not in sender_val.lower():
+                return False
+
+        # Recipient filter (partial match in 'to' list)
+        if filters.get('recipient'):
+            to_list = metadata.get('to', [])
+            if isinstance(to_list, str):
+                to_list = [to_list]
+            recipient_lower = filters['recipient'].lower()
+            found = any(recipient_lower in addr.lower() for addr in to_list if addr)
+            if not found:
+                return False
+
+        # CC filter (partial match in 'cc' list)
+        if filters.get('cc'):
+            cc_list = metadata.get('cc', [])
+            if isinstance(cc_list, str):
+                cc_list = [cc_list]
+            cc_lower = filters['cc'].lower()
+            found = any(cc_lower in addr.lower() for addr in cc_list if addr)
+            if not found:
+                return False
+
+        # Subject filter (partial match, case-insensitive)
+        if filters.get('subject_contains'):
+            subject_val = metadata.get('subject', '')
+            if not subject_val or filters['subject_contains'].lower() not in subject_val.lower():
+                return False
+
+        return True
 
     def _extract_snippet(self, content: str, query: str, max_length: int = 200) -> str:
         """Extract relevant snippet from content"""

@@ -4,7 +4,15 @@ from mcp.server import FastMCP
 from typing import Optional, List
 import logging
 
+try:
+    from core.query_parser import QueryOperatorParser
+except ImportError:
+    from backend.core.query_parser import QueryOperatorParser
+
 logger = logging.getLogger(__name__)
+
+# Query operator parser for email search
+query_parser = QueryOperatorParser()
 
 # Global references (initialized in server.py)
 indexer = None
@@ -183,8 +191,11 @@ def _apply_metadata_filters(
 def search_emails(
     query: str,
     sender: Optional[str] = None,
+    recipient: Optional[str] = None,
+    cc: Optional[str] = None,
     thread_id: Optional[str] = None,
     subject_contains: Optional[str] = None,
+    folder: Optional[str] = None,
     has_attachments: Optional[bool] = None,
     date_after: Optional[str] = None,
     date_before: Optional[str] = None,
@@ -194,7 +205,8 @@ def search_emails(
     enhance_results: bool = True,
     include_full_metadata: bool = False,
     collapse_threads: bool = True,
-    max_per_document: Optional[int] = None
+    max_per_document: Optional[int] = None,
+    parse_operators: bool = True
 ) -> dict:
     """
     Search emails with email-specific filters.
@@ -202,11 +214,25 @@ def search_emails(
     This tool is optimized for searching EML files with preprocessing
     (quote removal, signature removal, thread grouping).
 
+    Supports inline search operators (Outlook/Gmail style):
+        from:sender       - Emails from sender (partial match)
+        to:recipient      - Emails to recipient (partial match)
+        cc:recipient      - Emails with CC recipient (partial match)
+        subject:text      - Subject contains text
+        in:folder         - Emails in folder (inbox, sent, important, etc.)
+        has:attachment    - Emails with attachments
+        after:YYYY-MM-DD  - Emails after date
+        before:YYYY-MM-DD - Emails before date
+        thread:id         - Emails in specific thread
+
     Args:
-        query: Search keywords (space-separated)
+        query: Search text with optional inline operators (e.g., "from:kiraly project deadline")
         sender: Filter by sender email address (partial match)
+        recipient: Filter by recipient email address (partial match)
+        cc: Filter by CC email address (partial match)
         thread_id: Filter by email thread ID (groups related emails)
         subject_contains: Filter by subject line (partial match)
+        folder: Filter by email folder (inbox, sent, important, etc.)
         has_attachments: Filter emails with/without attachments
         date_after: Only emails after this date (ISO format: 2024-01-01)
         date_before: Only emails before this date (ISO format: 2024-12-31)
@@ -218,6 +244,7 @@ def search_emails(
         collapse_threads: Collapse results by thread, showing only the best match per thread (default: True).
             When enabled, adds thread_count metadata showing total emails in that thread.
         max_per_document: Maximum chunks per document (default: 3, 0=unlimited)
+        parse_operators: Whether to parse inline operators from query (default: True)
 
     Returns:
         Dictionary with email search results including:
@@ -225,8 +252,15 @@ def search_emails(
         - thread_id for grouping related emails
         - attachment metadata
         - cleaned content (quotes and signature removed)
+        - parsed_operators (if parse_operators=True)
 
-    Example:
+    Examples:
+        # With inline operators
+        search_emails(query="from:kiraly project deadline")
+        search_emails(query="in:important has:attachment budget")
+        search_emails(query='subject:"Q4 Report" from:finance after:2024-01-01')
+
+        # With explicit parameters
         search_emails(
             query="project deadline",
             sender="john@example.com",
@@ -236,29 +270,112 @@ def search_emails(
         )
     """
     try:
-        # Search only .eml files
-        # Get more candidates when collapsing threads (3x) vs filtering only (2x)
-        candidate_multiplier = 3 if collapse_threads else 2
-        results = search_engine.search(
-            query=query,
-            file_types=['.eml'],
-            max_results=min(max_results, 50) * candidate_multiplier,
-            mode=mode,
-            include_parent_context=include_parent_context,
-            enhance_results=False,
-            max_per_document=max_per_document
-        )
+        # Parse operators from query if enabled
+        parsed_operators = {}
+        search_query = query
+        parse_warnings = []
 
-        # Apply email-specific filters
+        if parse_operators and query:
+            parsed = query_parser.parse(query)
+            # Use free text as search query, fallback to original if no text
+            search_query = parsed.free_text if parsed.free_text else query
+            parsed_operators = parsed.get_filter_params()
+            parse_warnings = parsed.parse_warnings
+
+            if parsed.has_operators():
+                logger.debug(f"Parsed operators: {parsed_operators} from query: {query}")
+
+        # Merge parsed operators with explicit parameters
+        # Explicit parameters take precedence over parsed operators
+        effective_sender = sender or parsed_operators.get('sender')
+        effective_recipient = recipient or parsed_operators.get('recipient')
+        effective_cc = cc or parsed_operators.get('cc')
+        effective_subject = subject_contains or parsed_operators.get('subject_contains')
+        effective_folder = folder or parsed_operators.get('folder')
+        effective_thread = thread_id or parsed_operators.get('thread_id')
+        effective_date_after = date_after or parsed_operators.get('date_after')
+        effective_date_before = date_before or parsed_operators.get('date_before')
+
+        # has:attachment handling - explicit parameter takes precedence
+        effective_has_attachments = has_attachments
+        if effective_has_attachments is None and 'has_attachments' in parsed_operators:
+            effective_has_attachments = parsed_operators['has_attachments']
+
+        # Search only .eml files
+        # Fetch more candidates when filters are present so post-filtering doesn't drop everything
+        filters_present = any([
+            effective_sender,
+            effective_recipient,
+            effective_cc,
+            effective_thread,
+            effective_subject,
+            effective_folder,
+            effective_has_attachments is not None,
+            effective_date_after,
+            effective_date_before
+        ])
+
+        # Base multipliers (collapse_threads needs more to pick best per thread)
+        candidate_multiplier = 3 if collapse_threads else 2
+        if filters_present:
+            candidate_multiplier += 2  # widen recall before filtering
+
+        def _run_search(multiplier: int):
+            return search_engine.search(
+                query=search_query,
+                file_types=['.eml'],
+                max_results=min(max_results, 50) * multiplier,
+                mode=mode,
+                include_parent_context=include_parent_context,
+                enhance_results=False,
+                max_per_document=max_per_document,
+                # Pass email filters for pre-filtering at search layer
+                sender=effective_sender,
+                recipient=effective_recipient,
+                cc=effective_cc,
+                folder=effective_folder,
+                subject_contains=effective_subject,
+                has_attachments=effective_has_attachments,
+                date_after=effective_date_after,
+                date_before=effective_date_before,
+                thread_id=effective_thread
+            )
+
+        results = _run_search(candidate_multiplier)
+
+        # Apply email-specific filters (including new ones)
         filtered_results = _apply_email_filters(
             results,
-            sender=sender,
-            thread_id=thread_id,
-            subject_contains=subject_contains,
-            has_attachments=has_attachments,
-            date_after=date_after,
-            date_before=date_before
+            sender=effective_sender,
+            recipient=effective_recipient,
+            cc=effective_cc,
+            thread_id=effective_thread,
+            subject_contains=effective_subject,
+            folder=effective_folder,
+            has_attachments=effective_has_attachments,
+            date_after=effective_date_after,
+            date_before=effective_date_before
         )
+
+        # If filters are present and nothing matched, retry with a larger candidate pool
+        if filters_present and not filtered_results:
+            retry_multiplier = max(candidate_multiplier, 8)
+            logger.debug(
+                f"No results after filtering; retrying search with multiplier={retry_multiplier}"
+            )
+            results = _run_search(retry_multiplier)
+            filtered_results = _apply_email_filters(
+                results,
+                sender=effective_sender,
+                recipient=effective_recipient,
+                cc=effective_cc,
+                thread_id=effective_thread,
+                subject_contains=effective_subject,
+                folder=effective_folder,
+                has_attachments=effective_has_attachments,
+                date_after=effective_date_after,
+                date_before=effective_date_before
+            )
 
         # Collapse by thread if enabled (keeps best match per thread)
         if collapse_threads:
@@ -273,20 +390,26 @@ def search_emails(
         # Determine the actual mode used
         actual_mode = mode or search_engine.get_mode()
         if mode == 'auto' and hasattr(search_engine, 'query_router') and search_engine.query_router:
-            actual_mode = search_engine.query_router.route(query)
+            actual_mode = search_engine.query_router.route(search_query)
 
         return {
             "results": filtered_results[:max_results],
             "total": len(filtered_results),
-            "query": query,
+            "query": search_query,
+            "original_query": query if search_query != query else None,
+            "parsed_operators": parsed_operators if parse_operators else None,
+            "parse_warnings": parse_warnings if parse_warnings else None,
             "search_mode": actual_mode,
             "filters": {
-                "sender": sender,
-                "thread_id": thread_id,
-                "subject_contains": subject_contains,
-                "has_attachments": has_attachments,
-                "date_after": date_after,
-                "date_before": date_before,
+                "sender": effective_sender,
+                "recipient": effective_recipient,
+                "cc": effective_cc,
+                "thread_id": effective_thread,
+                "subject_contains": effective_subject,
+                "folder": effective_folder,
+                "has_attachments": effective_has_attachments,
+                "date_after": effective_date_after,
+                "date_before": effective_date_before,
                 "collapse_threads": collapse_threads
             }
         }
@@ -301,13 +424,33 @@ def search_emails(
 def _apply_email_filters(
     results: List[dict],
     sender: Optional[str] = None,
+    recipient: Optional[str] = None,
+    cc: Optional[str] = None,
     thread_id: Optional[str] = None,
     subject_contains: Optional[str] = None,
+    folder: Optional[str] = None,
     has_attachments: Optional[bool] = None,
     date_after: Optional[str] = None,
     date_before: Optional[str] = None
 ) -> List[dict]:
-    """Apply email-specific filters to search results"""
+    """
+    Apply email-specific filters to search results.
+
+    Args:
+        results: List of search results to filter
+        sender: Filter by sender (from field, partial match)
+        recipient: Filter by recipient (to field, partial match)
+        cc: Filter by CC field (partial match)
+        thread_id: Filter by thread ID (exact match)
+        subject_contains: Filter by subject (partial match)
+        folder: Filter by folder/label (exact match, case-insensitive)
+        has_attachments: Filter by attachment presence
+        date_after: Filter by date (after, ISO format)
+        date_before: Filter by date (before, ISO format)
+
+    Returns:
+        Filtered list of results matching all specified criteria
+    """
     from datetime import datetime
 
     filtered = []
@@ -321,6 +464,24 @@ def _apply_email_filters(
             if sender.lower() not in result_sender.lower():
                 continue
 
+        # Recipient filter (partial match on 'to' field)
+        if recipient:
+            result_to = metadata.get('to', '')
+            # Handle both string and list formats
+            if isinstance(result_to, list):
+                result_to = ', '.join(result_to)
+            if recipient.lower() not in result_to.lower():
+                continue
+
+        # CC filter (partial match)
+        if cc:
+            result_cc = metadata.get('cc', '')
+            # Handle both string and list formats
+            if isinstance(result_cc, list):
+                result_cc = ', '.join(result_cc)
+            if cc.lower() not in result_cc.lower():
+                continue
+
         # Thread ID filter
         if thread_id:
             result_thread = metadata.get('thread_id', '')
@@ -331,6 +492,12 @@ def _apply_email_filters(
         if subject_contains:
             result_subject = metadata.get('subject', '')
             if subject_contains.lower() not in result_subject.lower():
+                continue
+
+        # Folder filter (exact match, case-insensitive)
+        if folder:
+            result_folder = metadata.get('folder', '')
+            if folder.lower() != result_folder.lower():
                 continue
 
         # Attachments filter
@@ -454,24 +621,21 @@ def get_email_thread(thread_id: str, max_results: int = 50) -> dict:
         get_email_thread(thread_id="<original-message-id@example.com>")
     """
     try:
-        # Search for all emails with this thread ID
+        # Search for all emails with this thread ID using pre-filtering
         results = search_engine.search(
-            query="*",  # Match all
+            query="*",  # Match all content
             file_types=['.eml'],
-            max_results=max_results * 2
+            max_results=max_results * 2,
+            thread_id=thread_id  # Pre-filter by thread_id at search layer
         )
 
-        # Filter by thread ID
-        thread_emails = []
-        for result in results:
-            metadata = result.get('metadata', {})
-            if metadata.get('thread_id') == thread_id:
-                thread_emails.append(result)
+        # Results are already filtered by thread_id, just sort by date
+        thread_emails = list(results)  # Make a copy to sort
 
-        # Sort by date
+        # Sort by date (oldest first)
         thread_emails.sort(
             key=lambda x: x.get('metadata', {}).get('date_iso', ''),
-            reverse=False  # Oldest first
+            reverse=False
         )
 
         return {

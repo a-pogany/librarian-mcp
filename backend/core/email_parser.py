@@ -488,6 +488,9 @@ class EMLParser(Parser):
         # Normalize subject
         normalized_subject = ThreadIDGenerator.normalize_subject(headers.get('subject', ''))
 
+        # Infer folder from file path
+        folder = self._infer_folder(file_path)
+
         # Build metadata
         metadata = {
             'doc_type': 'email',
@@ -506,7 +509,8 @@ class EMLParser(Parser):
             'content_hash': content_hash,
             'is_duplicate': is_duplicate,
             'preprocessing': preprocess_info,
-            'encoding': 'utf-8'
+            'encoding': 'utf-8',
+            'folder': folder
         }
 
         # Use subject as heading
@@ -821,6 +825,69 @@ class EMLParser(Parser):
                 return f"{size_bytes:.1f} {unit}"
             size_bytes /= 1024
         return f"{size_bytes:.1f} TB"
+
+    def _infer_folder(self, file_path: str) -> str:
+        """
+        Infer email folder from file path.
+
+        Looks for common email folder names in the path hierarchy.
+        Falls back to the immediate parent directory name.
+
+        Args:
+            file_path: Path to the EML file
+
+        Returns:
+            Folder name (lowercase) or 'root' if no folder detected
+
+        Examples:
+            'docs/emails/inbox/msg.eml' -> 'inbox'
+            'docs/emails/sent/2024/msg.eml' -> 'sent'
+            'docs/emails/Important/msg.eml' -> 'important'
+            'docs/emails/msg.eml' -> 'root'
+        """
+        from pathlib import Path
+
+        # Known email folder names (lowercase)
+        KNOWN_FOLDERS = {
+            'inbox', 'sent', 'drafts', 'deleted', 'trash',
+            'archive', 'important', 'spam', 'junk', 'outbox',
+            'flagged', 'starred', 'all', 'unread', 'read',
+            # Outlook-specific
+            'sent items', 'deleted items', 'junk email',
+            'conversation history', 'sync issues',
+            # Common custom folders
+            'projects', 'personal', 'work', 'newsletters',
+            'receipts', 'travel', 'finance', 'hr', 'legal'
+        }
+
+        # Folders to skip (not meaningful as email folders)
+        SKIP_FOLDERS = {
+            'emails', 'eml', 'mail', 'email', 'messages',
+            'docs', 'documents', 'data', 'export', 'backup'
+        }
+
+        path_parts = Path(file_path).parts
+
+        # Search from the end, skip the filename
+        for part in reversed(path_parts[:-1]):
+            part_lower = part.lower()
+
+            # Check if it's a known email folder
+            if part_lower in KNOWN_FOLDERS:
+                return part_lower
+
+            # Check for multi-word folder names (with spaces replaced)
+            part_normalized = part_lower.replace('_', ' ').replace('-', ' ')
+            if part_normalized in KNOWN_FOLDERS:
+                return part_normalized
+
+        # Fallback: use immediate parent if it's not a skip folder
+        if len(path_parts) > 1:
+            parent = path_parts[-2].lower()
+            if parent not in SKIP_FOLDERS:
+                return parent
+
+        return 'root'
 
     @classmethod
     def reset_deduplicator(cls):

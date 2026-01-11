@@ -20,7 +20,17 @@ class SearchEngine:
         product: Optional[str] = None,
         component: Optional[str] = None,
         file_types: Optional[List[str]] = None,
-        max_results: int = 10
+        max_results: int = 10,
+        # Email-specific filters (pre-filter before scoring)
+        sender: Optional[str] = None,
+        recipient: Optional[str] = None,
+        cc: Optional[str] = None,
+        folder: Optional[str] = None,
+        subject_contains: Optional[str] = None,
+        has_attachments: Optional[bool] = None,
+        date_after: Optional[str] = None,
+        date_before: Optional[str] = None,
+        thread_id: Optional[str] = None
     ) -> List[Dict]:
         """
         Search documents using keyword matching
@@ -31,6 +41,15 @@ class SearchEngine:
             component: Filter by component
             file_types: Filter by file extensions
             max_results: Maximum results to return
+            sender: Filter emails by sender (partial match)
+            recipient: Filter emails by recipient (partial match in to field)
+            cc: Filter emails by CC recipient (partial match)
+            folder: Filter emails by folder (exact match, case-insensitive)
+            subject_contains: Filter emails by subject (partial match)
+            has_attachments: Filter emails with/without attachments
+            date_after: Filter emails after this date (ISO 8601)
+            date_before: Filter emails before this date (ISO 8601)
+            thread_id: Filter emails by thread ID (exact match)
 
         Returns:
             List of matching documents with snippets
@@ -41,11 +60,26 @@ class SearchEngine:
         if not keywords:
             return []
 
+        # Build email filters dict
+        email_filters = {
+            'sender': sender,
+            'recipient': recipient,
+            'cc': cc,
+            'folder': folder,
+            'subject_contains': subject_contains,
+            'has_attachments': has_attachments,
+            'date_after': date_after,
+            'date_before': date_before,
+            'thread_id': thread_id
+        }
+        # Remove None values
+        email_filters = {k: v for k, v in email_filters.items() if v is not None}
+
         # Search across all documents
         results = []
 
         for path, doc in self.indexer.index.documents.items():
-            # Apply filters
+            # Apply basic filters
             if product and doc['product'] != product:
                 continue
 
@@ -53,6 +87,10 @@ class SearchEngine:
                 continue
 
             if file_types and doc['file_type'] not in file_types:
+                continue
+
+            # Apply email-specific filters BEFORE scoring (pre-filter)
+            if email_filters and not self._matches_email_filters(doc, email_filters):
                 continue
 
             # Calculate relevance score
@@ -84,6 +122,87 @@ class SearchEngine:
 
         # Limit results
         return results[:max_results]
+
+    def _matches_email_filters(self, doc: Dict, filters: Dict) -> bool:
+        """Check if document matches email-specific filters (pre-filter logic)
+
+        Args:
+            doc: Document dict from index
+            filters: Dict of filter name -> value (only non-None values)
+
+        Returns:
+            True if doc matches all filters, False otherwise
+        """
+        # Get email metadata from document
+        metadata = doc.get('metadata', {})
+
+        # Only emails have email metadata
+        if not metadata and any(filters.values()):
+            # If filtering for email fields but doc has no metadata, skip
+            return False
+
+        # Sender filter (partial match, case-insensitive)
+        if 'sender' in filters:
+            sender_val = metadata.get('from', '')
+            if not sender_val or filters['sender'].lower() not in sender_val.lower():
+                return False
+
+        # Recipient filter (partial match in 'to' list)
+        if 'recipient' in filters:
+            to_list = metadata.get('to', [])
+            if isinstance(to_list, str):
+                to_list = [to_list]
+            recipient_lower = filters['recipient'].lower()
+            found = any(recipient_lower in addr.lower() for addr in to_list if addr)
+            if not found:
+                return False
+
+        # CC filter (partial match in 'cc' list)
+        if 'cc' in filters:
+            cc_list = metadata.get('cc', [])
+            if isinstance(cc_list, str):
+                cc_list = [cc_list]
+            cc_lower = filters['cc'].lower()
+            found = any(cc_lower in addr.lower() for addr in cc_list if addr)
+            if not found:
+                return False
+
+        # Folder filter (case-insensitive exact match)
+        if 'folder' in filters:
+            folder_val = metadata.get('folder', '')
+            if not folder_val or folder_val.lower() != filters['folder'].lower():
+                return False
+
+        # Subject filter (partial match, case-insensitive)
+        if 'subject_contains' in filters:
+            subject_val = metadata.get('subject', '')
+            if not subject_val or filters['subject_contains'].lower() not in subject_val.lower():
+                return False
+
+        # Has attachments filter (boolean)
+        if 'has_attachments' in filters:
+            has_attach = metadata.get('has_attachments', False)
+            if has_attach != filters['has_attachments']:
+                return False
+
+        # Date range filters (ISO 8601 string comparison)
+        if 'date_after' in filters:
+            date_val = metadata.get('date', '')
+            if not date_val or date_val < filters['date_after']:
+                return False
+
+        if 'date_before' in filters:
+            date_val = metadata.get('date', '')
+            if not date_val or date_val > filters['date_before']:
+                return False
+
+        # Thread ID filter (exact match)
+        if 'thread_id' in filters:
+            thread_val = metadata.get('thread_id', '')
+            if thread_val != filters['thread_id']:
+                return False
+
+        return True
 
     def get_document(
         self,

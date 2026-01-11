@@ -3,8 +3,8 @@
 import pytest
 import tempfile
 from pathlib import Path
-from core.indexer import FileIndexer
-from core.search import SearchEngine
+from backend.core.indexer import FileIndexer
+from backend.core.search import SearchEngine
 
 
 @pytest.fixture

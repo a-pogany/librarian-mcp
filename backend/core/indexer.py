@@ -614,6 +614,19 @@ class FileIndexer:
                     'indexed_at': doc['indexed_at'],
                     'file_size': doc['size_bytes']
                 }
+
+                # Add email-specific fields for .eml files (enables pre-filtering in ChromaDB)
+                if path.suffix == '.eml' and parsed.metadata:
+                    email_meta = parsed.metadata
+                    # ChromaDB only supports str, int, float, bool - convert lists to strings
+                    enhanced_metadata['email_from'] = email_meta.get('from', '') or ''
+                    enhanced_metadata['email_to'] = ','.join(email_meta.get('to', []) or [])
+                    enhanced_metadata['email_cc'] = ','.join(email_meta.get('cc', []) or [])
+                    enhanced_metadata['email_folder'] = (email_meta.get('folder', '') or '').lower()  # lowercase for case-insensitive search
+                    enhanced_metadata['email_subject'] = email_meta.get('subject', '') or ''
+                    enhanced_metadata['email_date'] = email_meta.get('date', '') or ''
+                    enhanced_metadata['email_thread_id'] = email_meta.get('thread_id', '') or ''
+                    enhanced_metadata['email_has_attachments'] = bool(email_meta.get('has_attachments', False))
                 self._index_embeddings_with_chunks(
                     path,
                     parsed.content,

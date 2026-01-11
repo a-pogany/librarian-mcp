@@ -10,8 +10,8 @@ from backend.core.indexer import DocumentIndex
 class MockSemanticEngine:
     """Mock semantic search engine for testing"""
 
-    def search(self, query, product=None, component=None, file_types=None, max_results=10):
-        """Return mock semantic results"""
+    def search(self, query, product=None, component=None, file_types=None, max_results=10, **kwargs):
+        """Return mock semantic results (accepts additional email filter kwargs)"""
         return [
             {
                 'id': 'doc1.md',
@@ -55,8 +55,8 @@ class MockKeywordEngine:
     def __init__(self):
         self.index = DocumentIndex()
 
-    def search(self, query, product=None, component=None, file_types=None, max_results=10):
-        """Return mock keyword results"""
+    def search(self, query, product=None, component=None, file_types=None, max_results=10, **kwargs):
+        """Return mock keyword results (accepts additional email filter kwargs)"""
         return []
 
 

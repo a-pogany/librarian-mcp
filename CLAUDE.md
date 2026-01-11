@@ -102,6 +102,7 @@ pytest backend/tests/ --cov=backend/core --cov=backend/mcp_server --cov-report=h
 ./scripts/status.sh       # Check server health
 ./scripts/test.sh         # Run test suite
 ./scripts/check_index.sh  # Detailed index diagnostics
+./scripts/reindex.sh      # Rebuild vector DB with updated metadata (use after upgrades)
 ```
 
 ## Architecture Overview
@@ -185,7 +186,7 @@ Return Results (150-200ms latency)
 - `MarkdownParser`, `TextParser`, `DOCXParser` - Extract content/headings with encoding detection
 - Automatic encoding fallback using chardet
 
-**backend/core/email_parser.py** (NEW in v2.1.0)
+**backend/core/email_parser.py** (Enhanced v2.0.4)
 - `EMLParser` - Parse EML files with email-specific preprocessing
 - `EmailPreprocessor` - Clean email content for RAG:
   - Quote chain removal (On ... wrote:, > prefixed, Outlook-style, multi-language)
@@ -195,6 +196,8 @@ Return Results (150-200ms latency)
 - Attachment metadata extraction (filename, type, size)
 - Subject normalization (removes Re:, Fwd:, [tags])
 - Multi-language support (English, German, French, Spanish, Hungarian)
+- **NEW**: `_infer_folder()` - Extract email folder from file path (inbox, sent, important, etc.)
+- **NEW**: Folder metadata included in parsed results for folder-based filtering
 
 **backend/core/indexer.py** (Enhanced v2.1.0)
 - `DocumentIndex` - In-memory index with product/component hierarchy
@@ -299,7 +302,17 @@ Return Results (150-200ms latency)
 - Sibling chunks: shows adjacent chunk content for context continuity
 - Impact: LLMs get better context without extra get_document calls
 
-**backend/mcp_server/tools.py** (Enhanced v2.1.0)
+**backend/core/query_parser.py** (NEW in v2.0.4)
+- `QueryOperatorParser` - Parse Outlook/Gmail-style search operators from queries
+- `ParsedQuery` - Dataclass holding parsed results (free_text, operators, warnings)
+- Supported operators: from, to, cc, subject, in, has, after, before, thread
+- Regex-based parsing with quoted value support
+- Case-insensitive operator matching
+- `get_filter_params()` - Convert operators to search_emails filter parameters
+- `extract_and_validate()` - Parse with optional operator whitelist
+- Impact: Natural query syntax for email search (e.g., "from:kiraly project deadline")
+
+**backend/mcp_server/tools.py** (Enhanced v2.0.4)
 - Defines 7 MCP tools exposed to LLMs
 - Uses FastMCP decorators for tool registration
 - Tools: search_documentation, get_document, list_products, list_components, get_index_status, **analyze_query**, **clear_search_cache**
@@ -309,6 +322,13 @@ Return Results (150-200ms latency)
   - `doc_type` - Filter by document type (api, guide, architecture, reference, readme, documentation)
   - `tags` - Filter by tags extracted from YAML frontmatter
   - `modified_after` / `modified_before` - Temporal filtering with ISO 8601 dates
+- **Enhanced `search_emails()` (v2.0.4)** with Outlook/Gmail-style operators:
+  - `recipient` - Filter by recipient (maps from `to:` operator)
+  - `cc` - Filter by CC recipient (maps from `cc:` operator)
+  - `folder` - Filter by email folder (maps from `in:` operator)
+  - `parse_operators` - Enable/disable inline operator parsing (default: true)
+  - Parses operators directly from query: `from:kiraly in:important project`
+  - Explicit parameters override parsed operators
 - **NEW**: `analyze_query()` - Analyze query characteristics and get mode recommendation
 - **NEW**: `clear_search_cache()` - Clear semantic query cache
 - Works transparently with all search modes

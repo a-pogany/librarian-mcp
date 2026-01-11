@@ -38,6 +38,25 @@ A production-grade documentation search system that makes technical documentatio
   - Document type inference (6 types: api, guide, architecture, reference, readme, documentation)
   - Temporal filtering with `modified_after` / `modified_before` (ISO 8601)
 
+**✅ Email Search Operators (Complete - v2.0.4):**
+- **Outlook/Gmail-Style Query Operators**
+  - `from:sender` - Filter by sender (partial match)
+  - `to:recipient` - Filter by recipient (partial match)
+  - `cc:recipient` - Filter by CC recipient (partial match)
+  - `subject:text` - Filter by subject line
+  - `in:folder` - Filter by email folder (inbox, sent, important, etc.)
+  - `has:attachment` - Filter emails with attachments
+  - `after:YYYY-MM-DD` - Filter by date (after)
+  - `before:YYYY-MM-DD` - Filter by date (before)
+  - `thread:id` - Filter by thread ID
+- **Inline Operator Parsing**
+  - Type operators directly in search query
+  - Supports quoted values: `subject:"Q4 Report"`
+  - Combines with free-text search: `from:kiraly project deadline`
+- **Folder Extraction**
+  - Automatically infers folder from file path
+  - Supports common folders: inbox, sent, drafts, important, etc.
+
 **🔜 Phase 3 (Planned):**
 - REST API for HTTP access
 - React web UI for human users
@@ -230,6 +249,58 @@ Claude will filter by date range:
   "query": "architecture",
   "doc_type": "architecture",
   "modified_after": "2024-11-27"
+}
+```
+
+### Email Search Operators (v2.0.4)
+```
+You: "Search for emails from kiraly about the project deadline"
+
+Using inline operators:
+{
+  "query": "from:kiraly project deadline"
+}
+
+This parses to:
+- Free text search: "project deadline"
+- Filter: sender = "kiraly"
+```
+
+```
+You: "Find emails in the important folder with attachments about budget"
+
+Using multiple operators:
+{
+  "query": "in:important has:attachment budget"
+}
+
+This parses to:
+- Free text search: "budget"
+- Filter: folder = "important"
+- Filter: has_attachments = true
+```
+
+```
+You: "Search for emails from John to Alice about the Q4 Report"
+
+Using quoted values:
+{
+  "query": "from:\"John Doe\" to:alice subject:\"Q4 Report\""
+}
+
+This parses to:
+- Free text search: "" (empty)
+- Filter: sender = "John Doe"
+- Filter: recipient = "alice"
+- Filter: subject_contains = "Q4 Report"
+```
+
+```
+You: "Find emails from last month about security"
+
+Using date operators:
+{
+  "query": "after:2024-11-01 before:2024-11-30 security"
 }
 ```
 
@@ -483,6 +554,47 @@ Get current indexing status and statistics.
 - `search_mode`: Current search mode
 - `last_indexed`: Last index update time
 
+### search_emails
+
+Search emails with Outlook/Gmail-style operators.
+
+**Parameters:**
+- `query` (str): Search query with optional inline operators
+- `sender` (str, optional): Filter by sender (can also use `from:` in query)
+- `recipient` (str, optional): Filter by recipient (can also use `to:` in query)
+- `cc` (str, optional): Filter by CC recipient (can also use `cc:` in query)
+- `thread_id` (str, optional): Filter by thread ID (can also use `thread:` in query)
+- `subject_contains` (str, optional): Filter by subject (can also use `subject:` in query)
+- `folder` (str, optional): Filter by folder (can also use `in:` in query)
+- `has_attachments` (bool, optional): Filter by attachments (can also use `has:attachment` in query)
+- `date_after` (str, optional): Filter after date (can also use `after:` in query)
+- `date_before` (str, optional): Filter before date (can also use `before:` in query)
+- `max_results` (int, default=10): Maximum results
+- `mode` (str, optional): Search mode (keyword/semantic/hybrid/rerank/hyde/auto)
+- `parse_operators` (bool, default=True): Enable inline operator parsing
+
+**Supported Operators:**
+| Operator | Example | Description |
+|----------|---------|-------------|
+| `from:` | `from:kiraly` | Filter by sender |
+| `to:` | `to:alice` | Filter by recipient |
+| `cc:` | `cc:manager` | Filter by CC recipient |
+| `subject:` | `subject:"Q4 Report"` | Filter by subject line |
+| `in:` | `in:important` | Filter by folder |
+| `has:` | `has:attachment` | Filter emails with attachments |
+| `after:` | `after:2024-01-01` | Filter after date |
+| `before:` | `before:2024-12-31` | Filter before date |
+| `thread:` | `thread:abc123` | Filter by thread ID |
+
+**Example**:
+```json
+{
+  "query": "from:kiraly in:important project deadline"
+}
+```
+
+This searches for "project deadline" in emails from "kiraly" in the "important" folder.
+
 ## Troubleshooting
 
 ### Server won't start
@@ -598,6 +710,31 @@ rm -rf ./vector_db
 - **ENTERPRISE_RAG_ROADMAP.md** - RAG enhancement roadmap
 
 ## Changelog
+
+### v2.0.4 (January 2026) - Email Search Operators
+
+**New Features**:
+- Outlook/Gmail-style search operators for emails
+- Inline operator parsing in search queries
+- Automatic folder extraction from file paths
+- Support for 9 operators: from, to, cc, subject, in, has, after, before, thread
+- Quoted value support for operators with spaces
+- Case-insensitive operator matching
+
+**Usage**:
+```
+# Search emails from kiraly about project
+from:kiraly project deadline
+
+# Search in specific folder with attachments
+in:important has:attachment budget
+
+# Search with date range
+after:2024-01-01 before:2024-12-31 quarterly report
+
+# Search with quoted values
+subject:"Q4 Report" from:"John Doe"
+```
 
 ### v2.0.0 (December 3, 2025) - Enterprise RAG Release
 
